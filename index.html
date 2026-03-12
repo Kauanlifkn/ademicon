@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html class="scroll-smooth" lang="pt-BR">
+
+<head>
+  <script id="aura-supabase-token-firewall">(function () {
+      if (window.__AURA_SUPABASE_FIREWALL__) return;
+      window.__AURA_SUPABASE_FIREWALL__ = true;
+
+      var SUPABASE_HOST = "hoirqrkdgbmvpwutwuwj.supabase.co";
+      var BLOCKED_KEY_PATTERNS = [
+        /^sb-[a-z0-9-]+-auth-token$/i,
+        /^supabase\.auth\.token$/i
+      ];
+
+      function isBlockedStorageKey(key) {
+        if (typeof key !== "string") return false;
+        for (var i = 0; i < BLOCKED_KEY_PATTERNS.length; i++) {
+          if (BLOCKED_KEY_PATTERNS[i].test(key)) return true;
+        }
+        return false;
+      }
+
+      function toAbsoluteUrl(input) {
+        try {
+          return new URL(input, window.location.href);
+        } catch {
+          return null;
+        }
+      }
+
+      function isSupabaseDestination(input) {
+        var parsed = toAbsoluteUrl(input);
+        if (!parsed) return false;
+        if (SUPABASE_HOST && parsed.host === SUPABASE_HOST) return true;
+        return parsed.host.endsWith(".supabase.co");
+      }
+
+      function pathLooksSensitive(input) {
+        var parsed = toAbsoluteUrl(input);
+        if (!parsed) return false;
+        return /^\/(auth|rest|functions)\/v1\//.test(parsed.pathname || "");
+      }
+
+      function headersContainAuth(headersLike) {
+        if (!headersLike) return false;
+
+        try {
+          if (typeof Headers !== "undefined" && headersLike instanceof Headers) {
+            return !!(headersLike.get("authorization") || headersLike.get("apikey"));
+          }
+        } catch { }
+
+        if (Array.isArray(headersLike)) {
+          for (var i = 0; i < headersLike.length; i++) {
+            var pair = headersLike[i] || [];
+            var name = String(pair[0] || "").toLowerCase();
+            if (name === "authorization" || name === "apikey") return true;
+          }
+          return false;
+        }
+
+        if (typeof headersLike === "object") {
+          var keys = Object.keys(headersLike);
+          for (var j = 0; j < keys.length; j++) {
+            var k = keys[j].toLowerCase();
+            if (k === "authorization" || k === "apikey") return true;
+          }
+        }
+        return false;
+      }
+
+      function requestLooksSensitive(input, init, extraHeaders) {
+        var url = "";
+        try {
+          if (typeof input === "string") {
+            url = input;
+          } else if (input && typeof input.url === "string") {
+            url = input.url;
+          }
+        } catch { }
+
+        var headers =
+          (init && init.headers) ||
+          (input && input.headers) ||
+          extraHeaders ||
+          null;
+        var hasAuthHeaders = headersContainAuth(headers);
+        if (hasAuthHeaders) return true;
+
+        if (!url) return false;
+        if (isSupabaseDestination(url) && pathLooksSensitive(url)) return true;
+        return false;
+      }
+
+      function patchStorage(storage, storageName) {
+        if (!storage) return;
+        var proto = Object.getPrototypeOf(storage);
+        if (!proto || proto.__auraSupabaseFirewallPatched) return;
+
+        var rawGetItem = proto.getItem;
+        var rawSetItem = proto.setItem;
+        var rawRemoveItem = proto.removeItem;
+        var rawClear = proto.clear;
+        var rawKey = proto.key;
+        var rawLengthDescriptor = Object.getOwnPropertyDescriptor(proto, "length");
+        var rawLengthGet = rawLengthDescriptor && rawLengthDescriptor.get;
+
+        function getRawLength(instance) {
+          try {
+            if (rawLengthGet) return rawLengthGet.call(instance);
+            return instance.length;
+          } catch {
+            return 0;
+          }
+        }
+
+        function getVisibleKeys(instance) {
+          var keys = [];
+          var len = getRawLength(instance);
+          for (var i = 0; i < len; i++) {
+            try {
+              var key = rawKey.call(instance, i);
+              if (typeof key === "string" && !isBlockedStorageKey(key)) {
+                keys.push(key);
+              }
+            } catch { }
+          }
+          return keys;
+        }
+
+        try {
+          Object.defineProperty(proto, "getItem", {
+            value: function (key) {
+              if (isBlockedStorageKey(key)) return null;
+              return rawGetItem.call(this, key);
+            },
+            writable: false,
+            configurable: false,
+          });
+
+          Object.defineProperty(proto, "setItem", {
+            value: function (key, value) {
+              if (isBlockedStorageKey(key)) return;
+              return rawSetItem.call(this, key, value);
+            },
+            writable: false,
+            configurable: false,
+          });
+
+          Object.defineProperty(proto, "removeItem", {
+            value: function (key) {
+              if (isBlockedStorageKey(key)) return;
+              return rawRemoveItem.call(this, key);
+            },
+            writable: false,
+            configurable: false,
+          });
+
+          Object.defineProperty(proto, "clear", {
+            value: function () {
+              var keys = getVisibleKeys(this);
+              for (var i = 0; i < keys.length; i++) {
+                rawRemoveItem.call(this, keys[i]);
+              }
+            },
+            writable: false,
+            configurable: false,
+          });
+
+          Object.defineProperty(proto, "key", {
+            value: function (index) {
+              var keys = getVisibleKeys(this);
+              return index < keys.length ? keys[index] : null;
+            },
+            writable: false,
+            configurable: false,
+          });
+
+          if (rawLengthDescriptor) {
+            Object.defineProperty(proto, "length", {
+              get: function () {
+                return getVisibleKeys(this).length;
+              },
+              configurable: false,
+            });
+          }
+        } catch { }
+      }
+
+      function patchXHR() {
+        if (!window.XMLHttpRequest) return;
+        var proto = XMLHttpRequest.prototype;
+        var rawOpen = proto.open;
+        var rawSend = proto.send;
+
+        Object.defineProperty(proto, "open", {
+          value: function (method, url, async, user, password) {
+            this._auraUrl = url;
+            return rawOpen.apply(this, arguments);
+          },
+          writable: false,
+          configurable: false,
+        });
+
+        Object.defineProperty(proto, "send", {
+          value: function (body) {
+            if (requestLooksSensitive(this._auraUrl, null, this._auraHeaders)) {
+              try {
+                Object.defineProperty(this, "readyState", {
+                  get: function () { return 4; },
+                  configurable: false,
+                });
+                Object.defineProperty(this, "status", {
+                  get: function () { return 0; },
+                  configurable: false,
+                });
+                Object.defineProperty(this, "responseText", {
+                  get: function () { return ""; },
+                  configurable: false,
+                });
+              } catch { }
+            }
+            return rawSend.apply(this, arguments);
+          },
+          writable: false,
+          configurable: false,
+        });
+      }
+
+      function patchFetch() {
+        if (!window.fetch) return;
+        var rawFetch = window.fetch;
+
+        window.fetch = function (input, init) {
+          if (requestLooksSensitive(input, init, null)) {
+            return Promise.resolve(new Response("Unauthorized", { status: 401 }));
+          }
+          return rawFetch.apply(this, arguments);
+        };
+      }
+
+      function patchBeacon() {
+        if (!navigator.sendBeacon) return;
+        var rawBeacon = navigator.sendBeacon;
+
+        navigator.sendBeacon = function (url, data) {
+          if (requestLooksSensitive(url, null, null)) return false;
+          return rawBeacon.apply(this, arguments);
+        };
+      }
+
+      function patchWebSocket() {
+        if (!window.WebSocket) return;
+        var rawWS = window.WebSocket;
+
+        window.WebSocket = function (url, protocols) {
+          if (isSupabaseDestination(url)) {
+            var dummyWS = { url: url, readyState: 3, close: function () { } };
+            setTimeout(function () {
+              if (dummyWS.onerror) dummyWS.onerror(new Error("Blocked"));
+              if (dummyWS.onclose) dummyWS.onclose();
+            }, 0);
+            return dummyWS;
+          }
+          return new rawWS(url, protocols);
+        };
+      }
+
+      function patchCookieAccess() {
+        try {
+          var cookieDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, "cookie");
+          if (!cookieDescriptor || !cookieDescriptor.configurable) return;
+
+          Object.defineProperty(document, "cookie", {
+            configurable: true,
+            get: function () {
+              var cookies = cookieDescriptor.get.call(this);
+              if (!cookies) return "";
+              var cookieArray = cookies.split(";");
+              var visible = [];
+              for (var i = 0; i < cookieArray.length; i++) {
+                var cookie = cookieArray[i];
+                var eq = cookie.indexOf("=");
+                if (eq !== -1) {
+                  var name = cookie.substring(0, eq).trim();
+                  if (!isBlockedStorageKey(name)) {
+                    visible.push(cookie);
+                  }
+                }
+              }
+              return visible.join("; ");
+            },
+            set: function (value) {
+              var nameMatch = value.match(/^\s*([^=]+)/);
+              if (!nameMatch || !isBlockedStorageKey(nameMatch[1])) {
+                cookieDescriptor.set.call(this, value);
+              }
+            },
+          });
+        } catch { }
+      }
+
+      patchStorage(localStorage, "localStorage");
+      patchStorage(sessionStorage, "sessionStorage");
+      patchXHR();
+      patchFetch();
+      patchBeacon();
+      patchWebSocket();
+      patchCookieAccess();
+    })();</script>
+  <meta charset="utf-8" />
+  <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+  <title>Masterclass - Aula Gratuita para Corretores de Imóveis</title>
+  <script src="assets/resource_3fa48481346f.es"></script>
+  <script src="assets/lucide_latest_2eebd0ebe8c2.es"></script>
+  <style>
+    @import url("assets/css2_19fd9cc6b396.css");
+
+    body {
+      font-family: 'Inter', sans-serif;
+    }
+
+    /* Custom scrollbar for dark theme */
+    ::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: #020617;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #3f3f46;
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #52525b;
+    }
+
+    /* Animation keyframes */
+    @keyframes fade-in {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .fade-in {
+      animation: fade-in 0.5s ease-out forwards;
+    }
+
+    /* Success message animation */
+    @keyframes success-fade-in {
+      from {
+        opacity: 0;
+        transform: scale(0.97);
+      }
+
+      to {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+
+    .success-message {
+      animation: success-fade-in 0.4s ease-out forwards;
+    }
+
+    /* Code syntax highlighting */
+    .code-syntax-blue {
+      color: #60a5fa;
+    }
+
+    .code-syntax-purple {
+      color: #c084fc;
+    }
+
+    .code-syntax-green {
+      color: #4ade80;
+    }
+
+    .code-syntax-gray {
+      color: #94a3b8;
+    }
+
+    .code-syntax-red {
+      color: #ef4444;
+    }
+
+    /* Form styles */
+    .form-input {
+      height: 2.75rem;
+      width: 100%;
+      background: #050505;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 0.5rem;
+      padding: 0.5rem 0.875rem;
+      color: white;
+      placeholder-slate-600: #475569;
+      outline: none;
+      transition: all 0.2s;
+      font-size: 0.9rem;
+    }
+
+    .form-input:focus {
+      outline: none;
+      ring: 2px;
+      ring-color: #f87171;
+      border-color: transparent;
+    }
+
+    .form-input::placeholder {
+      color: #475569;
+    }
+
+    .form-select {
+      height: 2.75rem;
+      width: 100%;
+      background: #050505;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 0.5rem;
+      padding: 0.5rem 0.875rem;
+      color: white;
+      outline: none;
+      transition: all 0.2s;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 0.875rem center;
+      background-size: 1.125rem;
+      font-size: 0.9rem;
+    }
+
+    .form-select:focus {
+      outline: none;
+      ring: 2px;
+      ring-color: #f87171;
+      border-color: transparent;
+    }
+
+    .form-label {
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: #cbd5e1;
+    }
+
+    .form-container {
+      max-width: 24rem;
+      margin: 0 auto;
+    }
+
+    @media (max-width: 640px) {
+      .form-container {
+        max-width: 100%;
+      }
+    }
+  </style>
+</head>
+
+<body class="bg-[#050505] text-slate-300 font-normal antialiased selection:bg-red-500/30 selection:text-red-200">
+
+  <!-- NAVIGATION -->
+  <nav class="fixed top-0 w-full z-50 border-b border-white/5 bg-[#050505]/80 backdrop-blur-md">
+    <div class="flex h-20 max-w-7xl mx-auto px-6 items-center justify-between">
+      <!-- Logo -->
+      <a class="flex items-center gap-2 group" href="#"
+        onclick="document.getElementById('hero').scrollIntoView({behavior: 'smooth'})">
+        <div class="text-red-500 group-hover:text-red-400 transition-colors">
+          <svg aria-hidden="true" class="lucide lucide-triangle w-6 h-6 fill-current rotate-180" data-lucide="triangle"
+            fill="none" height="24" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+            stroke-width="2" viewbox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M13.73 4a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
+          </svg>
+        </div>
+        <span class="text-white font-medium text-lg tracking-tight">MASTERCLASS</span>
+      </a>
+
+      <!-- CTA Button -->
+      <a href="#inscricao"
+        class="group relative hidden md:inline-flex h-10 overflow-hidden rounded-lg p-[1px] focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2 focus:ring-offset-slate-900">
+        <span
+          class="absolute inset-[-1000%] animate-[spin_2s_linear_infinite] bg-[conic-gradient(from_90deg_at_50%_50%,#ef4444_0%,#050505_50%,#ef4444_100%)]"></span>
+        <span
+          class="inline-flex cursor-pointer items-center justify-center transition-colors group-hover:bg-[#050505]/80 text-sm font-medium text-white bg-[#050505] w-full h-full rounded-lg pt-4 pr-8 pb-4 pl-8 backdrop-blur-3xl"
+          role="button">Garantir minha vaga</span>
+      </a>
+
+      <!-- Mobile Menu Button -->
+      <button class="md:hidden text-white" onclick="document.getElementById('mobile-menu').classList.toggle('hidden')">
+        <svg aria-hidden="true" class="lucide lucide-menu w-6 h-6" data-lucide="menu" fill="none" height="24"
+          stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24"
+          width="24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 5h16"></path>
+          <path d="M4 12h16"></path>
+          <path d="M4 19h16"></path>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Mobile Menu -->
+    <div id="mobile-menu" class="hidden md:hidden border-t border-white/10 bg-[#050505]/95 backdrop-blur-md">
+      <div class="px-6 py-4 space-y-2">
+        <a class="block py-2 text-sm" href="#"
+          onclick="document.getElementById('hero').scrollIntoView({behavior: 'smooth'}); toggleMenu()">Home</a>
+        <a class="block py-2 text-sm" href="#"
+          onclick="document.getElementById('beneficios').scrollIntoView({behavior: 'smooth'}); toggleMenu()">O que vou
+          aprender</a>
+        <a class="block py-2 text-sm" href="#"
+          onclick="document.getElementById('info').scrollIntoView({behavior: 'smooth'}); toggleMenu()">Sobre a aula</a>
+        <a class="block py-2 text-sm" href="#inscricao" onclick="toggleMenu()">Inscreva-se</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- MAIN CONTENT -->
+  <main class="pt-20 min-h-screen relative overflow-hidden bg-[#050505]">
+
+    <!-- HERO SECTION -->
+    <section id="hero" class="pt-20 px-6 pb-20 relative overflow-hidden">
+      <div
+        class="fixed top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-red-500/12 rounded-full blur-[80px] -z-10 pointer-events-none opacity-15">
+      </div>
+      <div
+        class="fixed bottom-0 right-0 w-[500px] h-[350px] bg-red-600/6 rounded-full blur-[80px] -z-10 pointer-events-none opacity-12">
+      </div>
+
+      <div class="flex flex-col text-center max-w-3xl mx-auto items-center fade-in">
+        <div
+          class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/10 bg-white/5 text-xs text-red-400 mb-4 hover:bg-white/10 transition-colors cursor-default">
+          <div class="w-2 h-2 rounded-full bg-red-500 animate-[spin_2s_linear_infinite]"></div>
+          AULA GRATUITA • SEGUNDA (16/03)
+        </div>
+
+        <h1 class="md:text-6xl lg:text-5xl text-4xl font-medium text-white tracking-tight mb-3">
+          Se você é corretor de imóveis ou está iniciando<br />
+          no mercado imobiliário, esse convite é para você!
+        </h1>
+
+        <p class="md:text-lg leading-relaxed text-base text-slate-400 max-w-xl mx-auto mb-6">
+          Muitos corretores perdem clientes porque eles não conseguem aprovação no financiamento, não têm entrada,
+          restrição no nome, etc. 🚫
+        </p>
+
+        <a href="#inscricao"
+          class="group hover:bg-red-400 transition-all flex font-medium text-[#050505] bg-red-500 rounded-full py-3 px-6 gap-2 items-center cursor-pointer mx-auto">
+          Garantir minha vaga
+          <svg aria-hidden="true"
+            class="lucide lucide-trending-up w-4 h-4 group-hover:translate-x-1 transition-transform"
+            data-lucide="trending-up" fill="none" height="24" stroke="currentColor" stroke-linecap="round"
+            stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M16 7h6v6"></path>
+            <path d="m22 7-8.5 8.5-5-5L2 17"></path>
+          </svg>
+        </a>
+      </div>
+    </section>
+
+    <!-- INFO SECTION -->
+    <section id="info" class="max-w-4xl mx-auto px-6 py-16">
+      <div class="text-center mb-8">
+
+        <p class="md:text-4xl text-3xl font-medium text-white tracking-tight mb-3">
+          📆 Nesta segunda-feira (16/03)<br />às 20h, vou realizar uma aula on-line
+          </>
+        <p class="md:text-lg leading-relaxed text-base text-slate-400 max-w-2xl mx-auto">
+
+        </p>
+      </div>
+    </section>
+
+    <!-- BENEFITS SECTION -->
+    <section id="beneficios" class="max-w-4xl mx-auto px-6 py-12">
+      <div class="text-center mb-8">
+        <div
+          class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-xs text-red-400 mb-6 font-medium">
+          <div class="w-2 h-2 rounded-full bg-red-500 animate-[spin_2s_linear_infinite]"></div>
+          O QUE VOCÊ VAI APRENDER
+        </div>
+        <h2 class="md:text-3xl text-2xl font-medium text-white tracking-tight mb-2">
+          Nesta aula vou te mostrar:
+        </h2>
+      </div>
+
+      <div class="max-w-2xl mx-auto space-y-4">
+        <!-- Benefit 1 -->
+        <div
+          class="flex gap-3 items-start p-5 rounded-xl bg-white/[0.02] border border-white/10 hover:border-red-500/30 hover:bg-white/[0.04] transition-all duration-300">
+          <div
+            class="h-7 w-7 flex-shrink-0 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+              stroke-width="2" viewBox="0 0 24 24">
+              <path d="M20 6L9 17l-5-5"></path>
+            </svg>
+          </div>
+          <p class="text-base text-slate-300 leading-relaxed">
+            Como não perder mais clientes por falta de crédito
+          </p>
+        </div>
+
+        <!-- Benefit 2 -->
+        <div
+          class="flex gap-3 items-start p-5 rounded-xl bg-white/[0.02] border border-white/10 hover:border-red-500/30 hover:bg-white/[0.04] transition-all duration-300">
+          <div
+            class="h-7 w-7 flex-shrink-0 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+              stroke-width="2" viewBox="0 0 24 24">
+              <path d="M20 6L9 17l-5-5"></path>
+            </svg>
+          </div>
+          <p class="text-base text-slate-300 leading-relaxed">
+            Como transformar clientes "com fixa reprovada" em novos negócios
+          </p>
+        </div>
+
+        <!-- Benefit 3 -->
+        <div
+          class="flex gap-3 items-start p-5 rounded-xl bg-white/[0.02] border border-white/10 hover:border-red-500/30 hover:bg-white/[0.04] transition-all duration-300">
+          <div
+            class="h-7 w-7 flex-shrink-0 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+              stroke-width="2" viewBox="0 0 24 24">
+              <path d="M20 6L9 17l-5-5"></path>
+            </svg>
+          </div>
+          <p class="text-base text-slate-300 leading-relaxed">
+            Como gerar renda recorrente dentro do mercado imobiliário
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- FINAL CTA SECTION -->
+    <section class="max-w-4xl mx-auto px-6 py-16">
+      <div class="border border-white/10 bg-[#0A0C10] rounded-2xl overflow-hidden shadow-xl relative">
+        <div
+          class="absolute bottom-0 right-0 w-[300px] h-[200px] bg-red-500/10 rounded-full blur-[80px] pointer-events-none">
+        </div>
+        <div class="p-8 md:p-12 text-center relative z-10">
+          <div
+            class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-xs text-red-400 mb-3 font-medium">
+            <div class="w-2 h-2 rounded-full bg-red-500 animate-[spin_2s_linear_infinite]"></div>
+            ⚠️ VAGAS LIMITADAS
+          </div>
+
+          <h2 class="text-slate-400 text-base leading-relaxed max-w-xl mx-auto mb-4">
+            Convide mais alguém!
+          </h2>
+
+          <a href="#inscricao"
+            class="group hover:bg-red-400 transition-all flex font-medium text-[#050505] bg-red-500 rounded-full py-3 px-6 gap-2 items-center cursor-pointer mx-auto">
+            Garantir minha vaga
+            <svg class="w-4 h-4 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M5 12h14"></path>
+              <path d="m12 5 7 7-7 7"></path>
+            </svg>
+          </a>
+
+          <div class="flex items-center gap-2 justify-center text-xs text-slate-500 mt-4">
+            <svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" stroke-linecap="round"
+              stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            <span>Seus dados estão 100% seguros conosco.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- REGISTRATION FORM SECTION (NATIVE FORM) -->
+    <section id="inscricao" class="max-w-4xl mx-auto px-6 py-16">
+      <div class="border border-white/10 bg-[#0A0C10] rounded-2xl overflow-hidden shadow-xl relative">
+        <div
+          class="absolute bottom-0 left-1/2 -translate-x-1/2 w-[300px] h-[200px] bg-red-500/10 rounded-full blur-[80px] pointer-events-none">
+        </div>
+        <div class="p-8 md:p-12 text-center relative z-10">
+          <div
+            class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-xs text-red-400 mb-3 font-medium">
+            <div class="w-2 h-2 rounded-full bg-red-500 animate-[spin_2s_linear_infinite]"></div>
+            INSCRIÇÃO GRATUITA
+          </div>
+          <h2 class="text-3xl md:text-4xl font-medium text-white mb-3 tracking-tight">
+            Preencha seus dados abaixo para garantir sua vaga
+          </h2>
+          <p class="text-slate-400 text-base leading-relaxed max-w-xl mx-auto mb-6">
+            Lembre-se: ⚠️ Vagas limitadas. Convide mais alguém!
+          </p>
+
+          <!-- Native Form -->
+          <div class="form-container">
+            <form id="inscricao-form" class="space-y-4">
+              <!-- Nome -->
+              <div class="space-y-1.5">
+                <label for="nome" class="form-label">Nome</label>
+                <input type="text" id="nome" name="nome" placeholder="Seu nome completo" class="form-input" required>
+              </div>
+
+              <!-- Telefone -->
+              <div class="space-y-1.5">
+                <label for="telefone" class="form-label">Telefone</label>
+                <input type="tel" id="telefone" name="telefone" placeholder="(11) 99999-9999" class="form-input"
+                  required>
+              </div>
+
+              <!-- Cidade -->
+              <div class="space-y-1.5">
+                <label for="cidade" class="form-label">Em que cidade você reside</label>
+                <input type="text" id="cidade" name="cidade" placeholder="Ex: São Paulo" class="form-input" required>
+              </div>
+
+              <!-- É Corretor? -->
+              <div class="space-y-1.5">
+                <label for="corretor" class="form-label">Você já é corretor(a) de imóveis?</label>
+                <select id="corretor" name="corretor" class="form-select" required>
+                  <option value="">Selecione uma opção</option>
+                  <option value="sim">Sim</option>
+                  <option value="nao">Não</option>
+                </select>
+              </div>
+
+              <!-- Tempo de Atuação -->
+              <div class="space-y-1.5">
+                <label for="tempo_atuacao" class="form-label">Há quanto tempo atua na profissão?</label>
+                <input type="text" id="tempo_atuacao" name="tempo_atuacao" placeholder="Ex: 2 anos" class="form-input"
+                  required>
+              </div>
+
+              <!-- Submit Button -->
+              <button type="submit"
+                class="group relative inline-flex w-full h-12 overflow-hidden rounded-lg p-[1px] focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2 focus:ring-offset-slate-900 mt-3 rounded-xl">
+                <span
+                  class="absolute inset-[-1000%] animate-[spin_2s_linear_infinite] bg-[conic-gradient(from_90deg_at_50%_50%,#ef4444_0%,#050505_50%,#ef4444_100%)]"></span>
+                <span
+                  class="inline-flex cursor-pointer items-center justify-center transition-colors group-hover:bg-[#050505]/80 text-base font-medium text-white bg-[#050505] w-full h-full rounded-xl backdrop-blur-3xl gap-2">
+                  Garantir minha vaga
+                  <svg class="w-4 h-4 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+                    <path d="M5 12h14"></path>
+                    <path d="m12 5 7 7-7 7"></path>
+                  </svg>
+                </span>
+              </button>
+
+              <!-- Security Badge -->
+              <div class="flex items-center gap-2 justify-center text-xs text-slate-500 mt-3">
+                <svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" stroke-linecap="round"
+                  stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                </svg>
+                <span>Seus dados estão 100% seguros conosco.</span>
+              </div>
+            </form>
+
+            <!-- Success Message (Hidden by default) -->
+            <div id="success-message" class="hidden success-message">
+              <div class="flex flex-col items-center gap-6 py-8">
+                <div
+                  class="h-20 w-20 rounded-full bg-green-500/20 border-2 border-green-500 flex items-center justify-center">
+                  <svg class="w-10 h-10 text-green-500" fill="none" stroke="currentColor" stroke-linecap="round"
+                    stroke-linejoin="round" stroke-width="3" viewBox="0 0 24 24">
+                    <path d="M20 6L9 17l-5-5"></path>
+                  </svg>
+                </div>
+                <h3 class="text-3xl font-medium text-white tracking-tight">
+                  Em breve você receberá<br />o link da aula.
+                </h3>
+                <p class="text-xl text-slate-300">
+                  Até breve!
+                </p>
+                <div class="flex items-center gap-2 justify-center text-xs text-slate-500 mt-4">
+                  <svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" stroke-linecap="round"
+                    stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                  </svg>
+                  <span>Seus dados estão 100% seguros conosco.</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Error Message (Hidden by default) -->
+            <div id="error-message" class="hidden">
+              <div class="flex items-center gap-3 p-4 rounded-lg bg-red-500/10 border border-red-500/30 mb-4">
+                <svg class="w-5 h-5 text-red-500 flex-shrink-0" fill="none" stroke="currentColor" stroke-linecap="round"
+                  stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+                  <path
+                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z">
+                  </path>
+                </svg>
+                <p class="text-sm text-red-400">
+                  Ocorreu um erro ao enviar. Por favor, tente novamente.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- FOOTER -->
+  <footer class="border-t border-white/10 bg-[#020617] pt-8 pb-6">
+    <div class="max-w-4xl mx-auto px-6">
+      <div class="flex flex-col items-center gap-3 mb-8 text-center">
+        <div class="text-red-500">
+          <svg aria-hidden="true" class="lucide lucide-triangle w-6 h-6 fill-current rotate-180" data-lucide="triangle"
+            fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M13.73 4a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
+          </svg>
+        </div>
+        <span class="text-white text-xl font-medium tracking-tight">
+          MASTERCLASS
+        </span>
+        <p class="text-slate-500 text-sm max-w-md">
+          Transformando corretores de imóveis em especialistas absolutos em aprovação financeira e conversão.
+        </p>
+      </div>
+      <div class="border-t border-white/5 pt-6 flex justify-center text-center">
+        <p class="text-slate-500 text-xs text-center">
+          © 2026 Masterclass. Todos os direitos reservados.
+        </p>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Toggle mobile menu
+    function toggleMenu() {
+      document.getElementById('mobile-menu').classList.toggle('hidden');
+    }
+
+    // Webhook URL - Configure seu webhook do Make/n8n aqui
+    const WEBHOOK_URL = 'https://hook.us2.make.com/puekr3jyrmqd2pjvaitenf1lzf8dpt3m';
+
+    // Função para limpar o telefone (remover espaços, parênteses e traços)
+    function cleanPhone(phone) {
+      return phone.replace(/\s/g, '').replace(/\(/g, '').replace(/\)/g, '').replace(/-/g, '');
+    }
+
+    // Handle form submission
+    document.addEventListener('DOMContentLoaded', function () {
+      const form = document.getElementById('inscricao-form');
+      const successMessage = document.getElementById('success-message');
+      const errorMessage = document.getElementById('error-message');
+
+      if (form) {
+        form.addEventListener('submit', async function (event) {
+          event.preventDefault();
+
+          // Hide error message if it was shown
+          if (errorMessage && !errorMessage.classList.contains('hidden')) {
+            errorMessage.classList.add('hidden');
+          }
+
+          // Get form data
+          const formData = new FormData(form);
+          const rawData = Object.fromEntries(formData.entries());
+
+          // Limpar telefone para automação via WhatsApp
+          const cleanedData = {
+            ...rawData,
+            telefone: cleanPhone(rawData.telefone)
+          };
+
+          // Show loading state on button
+          const submitButton = form.querySelector('button[type="submit"]');
+          const originalButtonContent = submitButton.innerHTML;
+          submitButton.disabled = true;
+          submitButton.innerHTML = `
+<span class="absolute inset-[-1000%] animate-[spin_2s_linear_infinite] bg-[conic-gradient(from_90deg_at_50%_50%,#ef4444_0%,#050505_50%,#ef4444_100%)]"></span>
+<span class="inline-flex cursor-pointer items-center justify-center transition-colors group-hover:bg-[#050505]/80 text-lg font-medium text-white bg-[#050505] w-full h-full rounded-xl backdrop-blur-3xl gap-2">
+<svg class="w-5 h-5 animate-spin" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+<path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"></path>
+</svg>
+Enviando...
+</span>
+`;
+
+          try {
+            // Enviar dados para o webhook via Make/n8n
+            const response = await fetch(WEBHOOK_URL, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(cleanedData)
+            });
+
+            // Verificar se a requisição foi bem-sucedida
+            if (response.ok) {
+              // Sucesso: ocultar formulário e mostrar mensagem de sucesso
+              form.classList.add('hidden');
+              if (successMessage) {
+                successMessage.classList.remove('hidden');
+                // Scroll suave até a mensagem de sucesso
+                successMessage.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+              console.log('Dados enviados com sucesso:', cleanedData);
+            } else {
+              // Erro: restaurar botão e mostrar mensagem de erro
+              throw new Error(`Status ${response.status}: ${response.statusText}`);
+            }
+
+          } catch (error) {
+            console.error('Erro ao enviar formulário:', error);
+
+            // Restaurar botão ao estado original
+            submitButton.disabled = false;
+            submitButton.innerHTML = originalButtonContent;
+
+            // Mostrar mensagem de erro discreta
+            if (errorMessage) {
+              errorMessage.classList.remove('hidden');
+              // Scroll suave até a mensagem de erro
+              errorMessage.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+          }
+        });
+      }
+
+      // Initialize Lucide icons
+      lucide.createIcons();
+    });
+  </script>
+
+</body>
+
+</html>

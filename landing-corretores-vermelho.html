@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html class="scroll-smooth" lang="pt-BR">
+<head>
+<script id="aura-supabase-token-firewall">(function () {
+  if (window.__AURA_SUPABASE_FIREWALL__) return;
+  window.__AURA_SUPABASE_FIREWALL__ = true;
+
+  var SUPABASE_HOST = "hoirqrkdgbmvpwutwuwj.supabase.co";
+  var BLOCKED_KEY_PATTERNS = [
+    /^sb-[a-z0-9-]+-auth-token$/i,
+    /^supabase\.auth\.token$/i
+  ];
+
+  function isBlockedStorageKey(key) {
+    if (typeof key !== "string") return false;
+    for (var i = 0; i < BLOCKED_KEY_PATTERNS.length; i++) {
+      if (BLOCKED_KEY_PATTERNS[i].test(key)) return true;
+    }
+    return false;
+  }
+
+  function toAbsoluteUrl(input) {
+    try {
+      return new URL(input, window.location.href);
+    } catch {
+      return null;
+    }
+  }
+
+  function isSupabaseDestination(input) {
+    var parsed = toAbsoluteUrl(input);
+    if (!parsed) return false;
+    if (SUPABASE_HOST && parsed.host === SUPABASE_HOST) return true;
+    return parsed.host.endsWith(".supabase.co");
+  }
+
+  function pathLooksSensitive(input) {
+    var parsed = toAbsoluteUrl(input);
+    if (!parsed) return false;
+    return /^\/(auth|rest|functions)\/v1\//.test(parsed.pathname || "");
+  }
+
+  function headersContainAuth(headersLike) {
+    if (!headersLike) return false;
+
+    try {
+      if (typeof Headers !== "undefined" && headersLike instanceof Headers) {
+        return !!(headersLike.get("authorization") || headersLike.get("apikey"));
+      }
+    } catch {}
+
+    if (Array.isArray(headersLike)) {
+      for (var i = 0; i < headersLike.length; i++) {
+        var pair = headersLike[i] || [];
+        var name = String(pair[0] || "").toLowerCase();
+        if (name === "authorization" || name === "apikey") return true;
+      }
+      return false;
+    }
+
+    if (typeof headersLike === "object") {
+      var keys = Object.keys(headersLike);
+      for (var j = 0; j < keys.length; j++) {
+        var k = keys[j].toLowerCase();
+        if (k === "authorization" || k === "apikey") return true;
+      }
+    }
+    return false;
+  }
+
+  function requestLooksSensitive(input, init, extraHeaders) {
+    var url = "";
+    try {
+      if (typeof input === "string") {
+        url = input;
+      } else if (input && typeof input.url === "string") {
+        url = input.url;
+      }
+    } catch {}
+
+    var headers =
+      (init && init.headers) ||
+      (input && input.headers) ||
+      extraHeaders ||
+      null;
+    var hasAuthHeaders = headersContainAuth(headers);
+    if (hasAuthHeaders) return true;
+
+    if (!url) return false;
+    if (isSupabaseDestination(url) && pathLooksSensitive(url)) return true;
+    return false;
+  }
+
+  function patchStorage(storage, storageName) {
+    if (!storage) return;
+    var proto = Object.getPrototypeOf(storage);
+    if (!proto || proto.__auraSupabaseFirewallPatched) return;
+
+    var rawGetItem = proto.getItem;
+    var rawSetItem = proto.setItem;
+    var rawRemoveItem = proto.removeItem;
+    var rawClear = proto.clear;
+    var rawKey = proto.key;
+    var rawLengthDescriptor = Object.getOwnPropertyDescriptor(proto, "length");
+    var rawLengthGet = rawLengthDescriptor && rawLengthDescriptor.get;
+
+    function getRawLength(instance) {
+      try {
+        if (rawLengthGet) return rawLengthGet.call(instance);
+        return instance.length;
+      } catch {
+        return 0;
+      }
+    }
+
+    function getVisibleKeys(instance) {
+      var keys = [];
+      var len = getRawLength(instance);
+      for (var i = 0; i < len; i++) {
+        try {
+          var key = rawKey.call(instance, i);
+          if (typeof key === "string" && !isBlockedStorageKey(key)) {
+            keys.push(key);
+          }
+        } catch {}
+      }
+      return keys;
+    }
+
+    try {
+      Object.defineProperty(proto, "getItem", {
+        value: function (key) {
+          if (isBlockedStorageKey(key)) return null;
+          return rawGetItem.call(this, key);
+        },
+        writable: false,
+        configurable: false,
+      });
+
+      Object.defineProperty(proto, "setItem", {
+        value: function (key, value) {
+          if (isBlockedStorageKey(key)) return;
+          return rawSetItem.call(this, key, value);
+        },
+        writable: false,
+        configurable: false,
+      });
+
+      Object.defineProperty(proto, "removeItem", {
+        value: function (key) {
+          if (isBlockedStorageKey(key)) return;
+          return rawRemoveItem.call(this, key);
+        },
+        writable: false,
+        configurable: false,
+      });
+
+      Object.defineProperty(proto, "clear", {
+        value: function () {
+          var keys = getVisibleKeys(this);
+          for (var i = 0; i < keys.length; i++) {
+            rawRemoveItem.call(this, keys[i]);
+          }
+        },
+        writable: false,
+        configurable: false,
+      });
+
+      Object.defineProperty(proto, "key", {
+        value: function (index) {
+          var keys = getVisibleKeys(this);
+          return index < keys.length ? keys[index] : null;
+        },
+        writable: false,
+        configurable: false,
+      });
+
+      if (rawLengthDescriptor) {
+        Object.defineProperty(proto, "length", {
+          get: function () {
+            return getVisibleKeys(this).length;
+          },
+          configurable: false,
+        });
+      }
+    } catch {}
+  }
+
+  function patchXHR() {
+    if (!window.XMLHttpRequest) return;
+    var proto = XMLHttpRequest.prototype;
+    var rawOpen = proto.open;
+    var rawSend = proto.send;
+
+    Object.defineProperty(proto, "open", {
+      value: function (method, url, async, user, password) {
+        this._auraUrl = url;
+        return rawOpen.apply(this, arguments);
+      },
+      writable: false,
+      configurable: false,
+    });
+
+    Object.defineProperty(proto, "send", {
+      value: function (body) {
+        if (requestLooksSensitive(this._auraUrl, null, this._auraHeaders)) {
+          try {
+            Object.defineProperty(this, "readyState", {
+              get: function () { return 4; },
+              configurable: false,
+            });
+            Object.defineProperty(this, "status", {
+              get: function () { return 0; },
+              configurable: false,
+            });
+            Object.defineProperty(this, "responseText", {
+              get: function () { return ""; },
+              configurable: false,
+            });
+          } catch {}
+        }
+        return rawSend.apply(this, arguments);
+      },
+      writable: false,
+      configurable: false,
+    });
+  }
+
+  function patchFetch() {
+    if (!window.fetch) return;
+    var rawFetch = window.fetch;
+
+    window.fetch = function (input, init) {
+      if (requestLooksSensitive(input, init, null)) {
+        return Promise.resolve(new Response("Unauthorized", { status: 401 }));
+      }
+      return rawFetch.apply(this, arguments);
+    };
+  }
+
+  function patchBeacon() {
+    if (!navigator.sendBeacon) return;
+    var rawBeacon = navigator.sendBeacon;
+
+    navigator.sendBeacon = function (url, data) {
+      if (requestLooksSensitive(url, null, null)) return false;
+      return rawBeacon.apply(this, arguments);
+    };
+  }
+
+  function patchWebSocket() {
+    if (!window.WebSocket) return;
+    var rawWS = window.WebSocket;
+
+    window.WebSocket = function (url, protocols) {
+      if (isSupabaseDestination(url)) {
+        var dummyWS = { url: url, readyState: 3, close: function () {} };
+        setTimeout(function () {
+          if (dummyWS.onerror) dummyWS.onerror(new Error("Blocked"));
+          if (dummyWS.onclose) dummyWS.onclose();
+        }, 0);
+        return dummyWS;
+      }
+      return new rawWS(url, protocols);
+    };
+  }
+
+  function patchCookieAccess() {
+    try {
+      var cookieDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, "cookie");
+      if (!cookieDescriptor || !cookieDescriptor.configurable) return;
+
+      Object.defineProperty(document, "cookie", {
+        configurable: true,
+        get: function () {
+          var cookies = cookieDescriptor.get.call(this);
+          if (!cookies) return "";
+          var cookieArray = cookies.split(";");
+          var visible = [];
+          for (var i = 0; i < cookieArray.length; i++) {
+            var cookie = cookieArray[i];
+            var eq = cookie.indexOf("=");
+            if (eq !== -1) {
+              var name = cookie.substring(0, eq).trim();
+              if (!isBlockedStorageKey(name)) {
+                visible.push(cookie);
+              }
+            }
+          }
+          return visible.join("; ");
+        },
+        set: function (value) {
+          var nameMatch = value.match(/^\s*([^=]+)/);
+          if (!nameMatch || !isBlockedStorageKey(nameMatch[1])) {
+            cookieDescriptor.set.call(this, value);
+          }
+        },
+      });
+    } catch {}
+  }
+
+  patchStorage(localStorage, "localStorage");
+  patchStorage(sessionStorage, "sessionStorage");
+  patchXHR();
+  patchFetch();
+  patchBeacon();
+  patchWebSocket();
+  patchCookieAccess();
+})();</script>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>MASTERCLASS CRÉDITO - Transforme suas Vendas</title>
+<script src="assets/resource_3fa48481346f.es"></script>
+<script src="assets/lucide_latest_2eebd0ebe8c2.es"></script>
+<style>
+@import url("css2_19fd9cc6b396.css");
+body { font-family: 'Inter', sans-serif; }
+/* Custom scrollbar for dark theme */
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: #020617; }
+::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #52525b; }
+
+/* Animation keyframes */
+@keyframes fade-in {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+    animation: fade-in 0.6s ease-out forwards;
+}
+
+/* Code syntax highlighting */
+.code-syntax-blue { color: #60a5fa; }
+.code-syntax-purple { color: #c084fc; }
+.code-syntax-green { color: #4ade80; }
+.code-syntax-gray { color: #94a3b8; }
+.code-syntax-red { color: #ef4444; }
+</style>
+</head>
+<body class="bg-[#050505] text-slate-300 font-normal antialiased selection:bg-red-500/30 selection:text-red-200">
+<!-- NAVIGATION -->
+<nav class="fixed top-0 w-full z-50 border-b border-white/5 bg-[#050505]/80 backdrop-blur-md">
+<div class="flex h-20 max-w-7xl mx-auto px-6 items-center justify-between">
+<!-- Logo -->
+<a class="flex items-center gap-2 group" href="#" onclick="document.getElementById('hero').scrollIntoView({behavior: 'smooth'})">
+<div class="text-red-500 group-hover:text-red-400 transition-colors">
+<svg aria-hidden="true" class="lucide lucide-triangle w-6 h-6 fill-current rotate-180" data-lucide="triangle" fill="none" height="24" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg">
+<path d="M13.73 4a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
+</svg>
+</div>
+<span class="text-white font-medium text-lg tracking-tight">MASTERCLASS CRÉDITO</span>
+</a>
+
+<!-- CTA Button -->
+<button class="group relative hidden md:inline-flex h-10 overflow-hidden rounded-lg p-[1px] focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2 focus:ring-offset-slate-900" onclick="route('inscricao')">
+<span class="absolute inset-[-1000%] animate-[spin_2s_linear_infinite] bg-[conic-gradient(from_90deg_at_50%_50%,#ef4444_0%,#050505_50%,#ef4444_100%)]"></span>
+<span class="inline-flex cursor-pointer items-center justify-center transition-colors group-hover:bg-[#050505]/80 text-sm font-medium text-white bg-[#050505] w-full h-full rounded-lg pt-4 pr-8 pb-4 pl-8 backdrop-blur-3xl" role="button">Garantir minha vaga</span>
+</button>
+
+<!-- Mobile Menu Button -->
+<button class="md:hidden text-white" onclick="document.getElementById('mobile-menu').classList.toggle('hidden')">
+<svg aria-hidden="true" class="lucide lucide-menu w-6 h-6" data-lucide="menu" fill="none" height="24" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg">
+<path d="M4 5h16"></path>
+<path d="M4 12h16"></path>
+<path d="M4 19h16"></path>
+</svg>
+</button>
+</div>
+
+<!-- Mobile Menu -->
+<div id="mobile-menu" class="hidden md:hidden border-t border-white/10 bg-[#050505]/95 backdrop-blur-md">
+<div class="px-6 py-4 space-y-2">
+<a class="block py-2 text-sm" href="#" onclick="document.getElementById('hero').scrollIntoView({behavior: 'smooth'}); toggleMenu()">Home</a>
+<a class="block py-2 text-sm" href="#" onclick="document.getElementById('beneficios').scrollIntoView({behavior: 'smooth'}); toggleMenu()">O que vou aprender</a>
+<a class="block py-2 text-sm" href="#" onclick="document.getElementById('problema').scrollIntoView({behavior: 'smooth'}); toggleMenu()">O problema</a>
+<a class="block py-2 text-sm" href="#" onclick="route('inscricao'); toggleMenu()">Inscreva-se</a>
+</div>
+</div>
+</nav>
+
+<!-- MAIN CONTENT -->
+<main id="page-landing" class="pt-20 min-h-screen relative overflow-hidden bg-[#050505]">
+
+<!-- HERO SECTION -->
+<section id="hero" class="pt-32 px-6 pb-32 relative overflow-hidden">
+<div class="fixed top-0 left-1/2 -translate-x-1/2 w-[1000px] h-[600px] bg-red-500/20 rounded-full blur-[120px] -z-10 pointer-events-none opacity-20"></div>
+<div class="fixed bottom-0 right-0 w-[800px] h-[600px] bg-red-600/10 rounded-full blur-[120px] -z-10 pointer-events-none opacity-20"></div>
+
+<div class="flex flex-col text-center max-w-4xl mx-auto items-center fade-in">
+<div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-xs text-red-400 mb-8 hover:bg-white/10 transition-colors cursor-default">
+<div class="w-2 h-2 rounded-full bg-red-500 animate-[spin_2s_linear_infinite]"></div>
+AULA GRATUITA • TEMPORÁRIA
+</div>
+
+<h1 class="md:text-7xl lg:text-6xl text-5xl font-medium text-white tracking-tight mb-8">
+Pare de perder vendas<br/>
+na mesa de crédito
+</h1>
+
+<p class="md:text-xl leading-relaxed text-lg text-slate-400 max-w-2xl mx-auto mb-10">
+Descubra o método exato para reverter clientes com crédito reprovado e garanta suas comissões mesmo quando o banco diz não.
+</p>
+
+<div class="flex flex-col sm:flex-row items-center gap-4">
+<button onclick="route('inscricao')" class="group hover:bg-red-400 transition-all flex font-medium text-[#050505] bg-red-500 rounded-full pt-4 pr-8 pb-4 pl-8 gap-x-2 gap-y-2 items-center cursor-pointer">
+Quero aprender a salvar minhas vendas
+<svg aria-hidden="true" class="lucide lucide-trending-up w-4 h-4 group-hover:translate-x-1 transition-transform" data-lucide="trending-up" fill="none" height="24" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg">
+<path d="M16 7h6v6"></path>
+<path d="m22 7-8.5 8.5-5-5L2 17"></path>
+</svg>
+</button>
+
+<a href="#problema" class="text-slate-400 hover:text-white text-sm transition-colors flex items-center gap-2">
+Saiba mais
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+<path d="m6 9 6 6 6-6"></path>
+</svg>
+</a>
+</div>
+</div>
+</section>
+
+<!-- PROBLEM SECTION -->
+<section id="problema" class="max-w-7xl mx-auto px-6 pb-32">
+<div class="text-center mb-16">
+<div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-xs text-red-400 mb-6 font-medium">
+<div class="w-2 h-2 rounded-full bg-red-500 animate-[spin_2s_linear_infinite]"></div>
+VOCÊ SE IDENTIFICA?
+</div>
+<h2 class="md:text-5xl text-4xl font-medium text-white tracking-tight mb-6">
+O problema que atinge<br/>80% dos corretores
+</h2>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+<!-- Card 1 -->
+<div class="group p-8 rounded-2xl bg-white/[0.02] border border-white/10 hover:border-red-500/30 hover:bg-white/[0.04] transition-all duration-300">
+<div class="h-16 w-16 mb-6 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 group-hover:scale-110 transition-transform">
+<svg aria-hidden="true" class="lucide lucide-x-circle w-8 h-8" data-lucide="x-circle" fill="none" height="32" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="32" xmlns="http://www.w3.org/2000/svg">
+<circle cx="12" cy="12" r="10"></circle>
+<path d="m15 9-6 6"></path>
+<path d="m9 9 6 6"></path>
+</svg>
+</div>
+<h3 class="text-xl font-medium text-white mb-3 tracking-tight">
+Crédito negado
+</h3>
+<p class="text-slate-400 leading-relaxed">
+Você já preparou toda a documentação, passou meses trabalhando o cliente e na última etapa... banco nega o crédito.
+</p>
+</div>
+
+<!-- Card 2 -->
+<div class="group p-8 rounded-2xl bg-white/[0.02] border border-white/10 hover:border-red-500/30 hover:bg-white/[0.04] transition-all duration-300">
+<div class="h-16 w-16 mb-6 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 group-hover:scale-110 transition-transform">
+<svg aria-hidden="true" class="lucide lucide-arrow-down-circle w-8 h-8" data-lucide="arrow-down-circle" fill="none" height="32" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="32" xmlns="http://www.w3.org/2000/svg">
+<circle cx="12" cy="12" r="10"></circle>
+<path d="M12 16v-8"></path>
+<path d="m8 12 4 4 4-4"></path>
+</svg>
+</div>
+<h3 class="text-xl font-medium text-white mb-3 tracking-tight">
+Comissões perdidas
+</h3>
+<p class="text-slate-400 leading-relaxed">
+Sem o crédito aprovado, não há negócio. E sem negócio, meses de trabalho duro se perdem em segundos.
+</p>
+</div>
+
+<!-- Card 3 -->
+<div class="group p-8 rounded-2xl bg-white/[0.02] border border-white/10 hover:border-red-500/30 hover:bg-white/[0.04] transition-all duration-300">
+<div class="h-16 w-16 mb-6 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 group-hover:scale-110 transition-transform">
+<svg aria-hidden="true" class="lucide lucide-users w-8 h-8" data-lucide="users" fill="none" height="32" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="32" xmlns="http://www.w3.org/2000/svg">
+<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+<circle cx="9" cy="7" r="4"></circle>
+<path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+<path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+</svg>
+</div>
+<h3 class="text-xl font-medium text-white mb-3 tracking-tight">
+Clientes desistindo
+</h3>
+<p class="text-slate-400 leading-relaxed">
+Depois de tantas negativas, seus clientes começam a desistir de tentar financiar imóveis com você.
+</p>
+</div>
+</div>
+</section>
+
+<!-- BENEFITS SECTION -->
+<section id="beneficios" class="max-w-7xl mx-auto px-6 pb-32">
+<div class="text-center mb-16">
+<div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-xs text-red-400 mb-6 font-medium">
+<div class="w-2 h-2 rounded-full bg-red-500 animate-[spin_2s_linear_infinite]"></div>
+NA AULA VOCÊ VAI APRENDER
+</div>
+<h2 class="md:text-5xl text-4xl font-medium text-white tracking-tight mb-6">
+Transforme negativas<br/>em aprovações
+</h2>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+<!-- Benefit 1 -->
+<div class="flex gap-6 p-6 rounded-2xl bg-white/[0.02] border border-white/10 hover:border-red-500/30 hover:bg-white/[0.04] transition-all duration-300">
+<div class="h-14 w-14 flex-shrink-0 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 group-hover:scale-110 transition-transform">
+<svg aria-hidden="true" class="lucide lucide-search w-6 h-6" data-lucide="search" fill="none" height="24" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg">
+<circle cx="11" cy="11" r="8"></circle>
+<path d="m21 21-4.3-4.3"></path>
+</svg>
+</div>
+<div>
+<h3 class="text-xl font-medium text-white mb-2 tracking-tight">
+Análise prévia de crédito
+</h3>
+<p class="text-slate-400 leading-relaxed">
+Como identificar problemas de crédito antes mesmo de iniciar o processo e preparar a documentação correta.
+</p>
+</div>
+</div>
+
+<!-- Benefit 2 -->
+<div class="flex gap-6 p-6 rounded-2xl bg-white/[0.02] border border-white/10 hover:border-red-500/30 hover:bg-white/[0.04] transition-all duration-300">
+<div class="h-14 w-14 flex-shrink-0 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 group-hover:scale-110 transition-transform">
+<svg aria-hidden="true" class="lucide lucide-file-check w-6 h-6" data-lucide="file-check" fill="none" height="24" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg">
+<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+<path d="M14 2v6h6"></path>
+<path d="m9 15 2 2 4-4"></path>
+</svg>
+</div>
+<div>
+<h3 class="text-xl font-medium text-white mb-2 tracking-tight">
+Documentação impecável
+</h3>
+<p class="text-slate-400 leading-relaxed">
+O checklist completo de documentos que os bancos exigem e como organizar tudo para garantir aprovação.
+</p>
+</div>
+</div>
+
+<!-- Benefit 3 -->
+<div class="flex gap-6 p-6 rounded-2xl bg-white/[0.02] border border-white/10 hover:border-red-500/30 hover:bg-white/[0.04] transition-all duration-300">
+<div class="h-14 w-14 flex-shrink-0 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 group-hover:scale-110 transition-transform">
+<svg aria-hidden="true" class="lucide lucide-building-bank w-6 h-6" data-lucide="building-bank" fill="none" height="24" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg">
+<path d="M3 21h18"></path>
+<path d="M5 21V7l8-4 8 4v14"></path>
+<path d="M8 21v-2a2 2 0 0 1 4 0v2"></path>
+</svg>
+</div>
+<div>
+<h3 class="text-xl font-medium text-white mb-2 tracking-tight">
+Estratégias por banco
+</h3>
+<p class="text-slate-400 leading-relaxed">
+Cada banco tem critérios diferentes. Você vai aprender a se adaptar a cada instituição para maximizar aprovações.
+</p>
+</div>
+</div>
+
+<!-- Benefit 4 -->
+<div class="flex gap-6 p-6 rounded-2xl bg-white/[0.02] border border-white/10 hover:border-red-500/30 hover:bg-white/[0.04] transition-all duration-300">
+<div class="h-14 w-14 flex-shrink-0 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 group-hover:scale-110 transition-transform">
+<svg aria-hidden="true" class="lucide lucide-refresh-ccw w-6 h-6" data-lucide="refresh-ccw" fill="none" height="24" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg">
+<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+<path d="M21 3v5h-5"></path>
+<path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
+<path d="M3 21v-5h5"></path>
+</svg>
+</div>
+<div>
+<h3 class="text-xl font-medium text-white mb-2 tracking-tight">
+Recursos e reaprovações
+</h3>
+<p class="text-slate-400 leading-relaxed">
+O que fazer quando recebemos uma negativa e como estruturar recursos que realmente funcionam.
+</p>
+</div>
+</div>
+</div>
+</section>
+
+<!-- FINAL CTA SECTION -->
+<section class="max-w-7xl mx-auto px-6 pb-32">
+<div class="border border-white/10 bg-[#0A0C10] rounded-3xl overflow-hidden shadow-2xl relative">
+<div class="absolute bottom-0 right-0 w-[400px] h-[300px] bg-red-500/10 rounded-full blur-[100px] pointer-events-none"></div>
+<div class="p-10 md:p-16 text-center relative z-10">
+<div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-xs text-red-400 mb-6 font-medium">
+<div class="w-2 h-2 rounded-full bg-red-500 animate-[spin_2s_linear_infinite]"></div>
+VAGAS LIMITADAS
+</div>
+<h2 class="text-4xl lg:text-5xl font-medium text-white mb-6 tracking-tight">
+Não deixe mais<br/>comissões escaparem
+</h2>
+<p class="text-slate-400 text-lg leading-relaxed max-w-2xl mx-auto mb-10">
+A masterclass é 100% gratuita e você vai sair com um plano prático para transformar negativas em aprovações.
+</p>
+
+<button onclick="route('inscricao')" class="group hover:bg-red-400 transition-all flex font-medium text-[#050505] bg-red-500 rounded-full pt-4 pr-8 pb-4 pl-8 gap-x-2 gap-y-2 items-center cursor-pointer mx-auto">
+Garantir minha vaga gratuita
+<svg class="w-5 h-5 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+<path d="M5 12h14"></path>
+<path d="m12 5 7 7-7 7"></path>
+</svg>
+</button>
+
+<div class="flex items-center gap-2 justify-center text-xs text-slate-500 mt-6">
+<svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+</svg>
+<span>Seus dados estão 100% seguros conosco.</span>
+</div>
+</div>
+</div>
+</section>
+
+</main>
+
+<!-- FOOTER -->
+<footer class="border-t border-white/10 bg-[#020617] pt-16 pb-8">
+<div class="max-w-7xl mx-auto px-6">
+<div class="flex flex-col items-center gap-4 mb-16 text-center">
+<div class="text-red-500">
+<svg aria-hidden="true" class="lucide lucide-triangle w-8 h-8 fill-current rotate-180" data-lucide="triangle" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<path d="M13.73 4a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
+</svg>
+</div>
+<span class="text-white text-2xl font-medium tracking-tight">
+MASTERCLASS CRÉDITO
+</span>
+<p class="text-slate-500 text-sm max-w-md">
+Transformando corretores de imóveis em especialistas absolutos em aprovação financeira e conversão.
+</p>
+</div>
+<div class="border-t border-white/5 pt-8 flex justify-center text-center">
+<p class="text-slate-500 text-xs text-center">
+© 2026 Masterclass Crédito. Todos os direitos reservados.
+</p>
+</div>
+</div>
+</footer>
+
+<!-- REGISTRATION PAGE (Hidden by default) -->
+<div class="hidden min-h-screen bg-[#050505] relative overflow-hidden" id="page-inscricao">
+<!-- Background Effects -->
+<div class="fixed top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-red-500/10 rounded-full blur-[120px] -z-10 pointer-events-none opacity-30"></div>
+<div class="fixed bottom-0 right-0 w-[600px] h-[400px] bg-red-400/5 rounded-full blur-[100px] -z-10 pointer-events-none opacity-20"></div>
+
+<main class="min-h-screen flex items-center justify-center px-6 py-12">
+<div class="w-full max-w-lg mx-auto">
+<!-- Header -->
+<div class="text-center mb-8">
+<div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-xs text-red-400 mb-6 font-medium">
+<div class="w-2 h-2 rounded-full bg-red-500 animate-[spin_2s_linear_infinite]"></div>
+ÚLTIMAS VAGAS DISPONÍVEIS
+</div>
+<h1 class="text-4xl md:text-5xl font-medium text-white mb-4 tracking-tight leading-[1.1]">
+Falta pouco!
+</h1>
+<p class="text-lg text-slate-400 leading-relaxed">
+Preencha seus dados para garantir seu acesso à aula exclusiva.
+</p>
+</div>
+
+<!-- Form Card -->
+<div class="border border-white/10 bg-[#0A0C10] rounded-3xl p-8 md:p-10 shadow-2xl relative">
+<div class="absolute top-4 right-4 w-[150px] h-[150px] bg-red-500/10 rounded-full blur-[80px] pointer-events-none"></div>
+
+<form onsubmit="event.preventDefault(); handleInscricao();" class="space-y-6 relative z-10">
+<!-- Nome Completo -->
+<div class="space-y-2">
+<label for="nome" class="text-sm font-medium text-slate-300">Nome Completo</label>
+<input
+type="text"
+id="nome"
+name="nome"
+placeholder="Ex: João da Silva"
+class="h-14 w-full bg-[#050505] border border-white/10 rounded-lg px-4 text-white placeholder-slate-600 outline-none focus:outline-none focus:ring-2 focus:ring-red-400 focus:border-transparent transition-all"
+required
+>
+</div>
+
+<!-- E-mail -->
+<div class="space-y-2">
+<label for="email" class="text-sm font-medium text-slate-300">E-mail</label>
+<input
+type="email"
+id="email"
+name="email"
+placeholder="seu@email.com"
+class="h-14 w-full bg-[#050505] border border-white/10 rounded-lg px-4 text-white placeholder-slate-600 outline-none focus:outline-none focus:ring-2 focus:ring-red-400 focus:border-transparent transition-all"
+required
+>
+</div>
+
+<!-- WhatsApp -->
+<div class="space-y-2">
+<label for="whatsapp" class="text-sm font-medium text-slate-300">WhatsApp</label>
+<input
+type="tel"
+id="whatsapp"
+name="whatsapp"
+placeholder="(11) 99999-9999"
+class="h-14 w-full bg-[#050505] border border-white/10 rounded-lg px-4 text-white placeholder-slate-600 outline-none focus:outline-none focus:ring-2 focus:ring-red-400 focus:border-transparent transition-all"
+required
+>
+</div>
+
+<!-- Submit Button -->
+<button
+type="submit"
+class="group relative inline-flex w-full h-14 overflow-hidden rounded-lg p-[1px] focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2 focus:ring-offset-slate-900 mt-4 rounded-xl"
+>
+<span class="absolute inset-[-1000%] animate-[spin_2s_linear_infinite] bg-[conic-gradient(from_90deg_at_50%_50%,#ef4444_0%,#050505_50%,#ef4444_100%)]"></span>
+<span class="inline-flex cursor-pointer items-center justify-center transition-colors group-hover:bg-[#050505]/80 text-lg font-medium text-white bg-[#050505] w-full h-full rounded-xl backdrop-blur-3xl gap-2">
+Concluir Inscrição
+<svg class="w-5 h-5 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+<path d="M5 12h14"></path>
+<path d="m12 5 7 7-7 7"></path>
+</svg>
+</span>
+</button>
+
+<!-- Security Badge -->
+<div class="flex items-center gap-2 justify-center text-xs text-slate-500 mt-4">
+<svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+</svg>
+<span>Seus dados estão 100% seguros conosco.</span>
+</div>
+</form>
+</div>
+
+<!-- Back Button -->
+<div class="text-center mt-6">
+<button
+onclick="route('landing')"
+class="text-slate-400 hover:text-red-400 text-sm transition-colors flex items-center gap-2 justify-center mx-auto"
+>
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+<path d="m15 18-6-6 6-6"></path>
+</svg>
+Voltar para a página inicial
+</button>
+</div>
+</div>
+</main>
+</div>
+
+<script>
+// Routing function for SPA navigation
+function route(pageId) {
+// Hide all pages
+const pages = ['landing', 'inscricao'];
+pages.forEach(id => {
+const el = document.getElementById('page-' + id);
+if (el) el.classList.add('hidden');
+});
+
+// Show requested page (default to landing if missing)
+const target = document.getElementById('page-' + pageId) || document.getElementById('page-landing');
+target.classList.remove('hidden');
+
+// Reset scroll
+window.scrollTo(0, 0);
+}
+
+// Handle registration form submission
+function handleInscricao() {
+const nome = document.getElementById('nome').value;
+const email = document.getElementById('email').value;
+const whatsapp = document.getElementById('whatsapp').value;
+
+// Here you would typically send data to your backend
+// For now, show a success message
+alert('🎉 Inscrição realizada com sucesso!\n\n' +
+'Nome: ' + nome + '\n' +
+'Email: ' + email + '\n' +
+'WhatsApp: ' + whatsapp + '\n\n' +
+'Você receberá o link de acesso em breve!');
+
+// Redirect back to landing after submission
+route('landing');
+}
+
+// Toggle mobile menu
+function toggleMenu() {
+document.getElementById('mobile-menu').classList.toggle('hidden');
+}
+
+// Initialize Lucide icons
+document.addEventListener('DOMContentLoaded', function() {
+lucide.createIcons();
+});
+</script>
+
+</body>
+</html>

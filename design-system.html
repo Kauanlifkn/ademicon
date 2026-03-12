@@ -1,0 +1,1759 @@
+<html lang="en"><head>
+<script id="aura-supabase-token-firewall">(function () {
+  if (window.__AURA_SUPABASE_FIREWALL__) return;
+  window.__AURA_SUPABASE_FIREWALL__ = true;
+
+  var SUPABASE_HOST = "hoirqrkdgbmvpwutwuwj.supabase.co";
+  var BLOCKED_KEY_PATTERNS = [
+    /^sb-[a-z0-9-]+-auth-token$/i,
+    /^supabase\.auth\.token$/i
+  ];
+
+  function isBlockedStorageKey(key) {
+    if (typeof key !== "string") return false;
+    for (var i = 0; i < BLOCKED_KEY_PATTERNS.length; i++) {
+      if (BLOCKED_KEY_PATTERNS[i].test(key)) return true;
+    }
+    return false;
+  }
+
+  function toAbsoluteUrl(input) {
+    try {
+      return new URL(input, window.location.href);
+    } catch {
+      return null;
+    }
+  }
+
+  function isSupabaseDestination(input) {
+    var parsed = toAbsoluteUrl(input);
+    if (!parsed) return false;
+    if (SUPABASE_HOST && parsed.host === SUPABASE_HOST) return true;
+    return parsed.host.endsWith(".supabase.co");
+  }
+
+  function pathLooksSensitive(input) {
+    var parsed = toAbsoluteUrl(input);
+    if (!parsed) return false;
+    return /^\/(auth|rest|functions)\/v1\//.test(parsed.pathname || "");
+  }
+
+  function headersContainAuth(headersLike) {
+    if (!headersLike) return false;
+
+    try {
+      if (typeof Headers !== "undefined" && headersLike instanceof Headers) {
+        return !!(headersLike.get("authorization") || headersLike.get("apikey"));
+      }
+    } catch {}
+
+    if (Array.isArray(headersLike)) {
+      for (var i = 0; i < headersLike.length; i++) {
+        var pair = headersLike[i] || [];
+        var name = String(pair[0] || "").toLowerCase();
+        if (name === "authorization" || name === "apikey") return true;
+      }
+      return false;
+    }
+
+    if (typeof headersLike === "object") {
+      var keys = Object.keys(headersLike);
+      for (var j = 0; j < keys.length; j++) {
+        var k = keys[j].toLowerCase();
+        if (k === "authorization" || k === "apikey") return true;
+      }
+    }
+    return false;
+  }
+
+  function requestLooksSensitive(input, init, extraHeaders) {
+    var url = "";
+    try {
+      if (typeof input === "string") {
+        url = input;
+      } else if (input && typeof input.url === "string") {
+        url = input.url;
+      }
+    } catch {}
+
+    var headers =
+      (init && init.headers) ||
+      (input && input.headers) ||
+      extraHeaders ||
+      null;
+    var hasAuthHeaders = headersContainAuth(headers);
+    if (hasAuthHeaders) return true;
+
+    if (!url) return false;
+    if (isSupabaseDestination(url) && pathLooksSensitive(url)) return true;
+    return false;
+  }
+
+  function patchStorage(storage, storageName) {
+    if (!storage) return;
+    var proto = Object.getPrototypeOf(storage);
+    if (!proto || proto.__auraSupabaseFirewallPatched) return;
+
+    var rawGetItem = proto.getItem;
+    var rawSetItem = proto.setItem;
+    var rawRemoveItem = proto.removeItem;
+    var rawKey = proto.key;
+    var rawLengthDescriptor = Object.getOwnPropertyDescriptor(proto, "length");
+    var rawLengthGet = rawLengthDescriptor && rawLengthDescriptor.get;
+
+    function getRawLength(instance) {
+      try {
+        if (rawLengthGet) return Number(rawLengthGet.call(instance) || 0);
+      } catch {}
+      try {
+        return Number(instance.length || 0);
+      } catch {}
+      return 0;
+    }
+
+    function getVisibleKeys(instance) {
+      var visible = [];
+      var total = getRawLength(instance);
+      for (var i = 0; i < total; i++) {
+        var currentKey = rawKey.call(instance, i);
+        if (currentKey && !isBlockedStorageKey(currentKey)) {
+          visible.push(currentKey);
+        }
+      }
+      return visible;
+    }
+
+    function maskBlockedKeyProperty(instance, keyName) {
+      if (!keyName || !isBlockedStorageKey(keyName)) return;
+      try {
+        Object.defineProperty(instance, keyName, {
+          configurable: true,
+          enumerable: false,
+          get: function () {
+            return null;
+          },
+          set: function () {
+            return true;
+          }
+        });
+      } catch {}
+    }
+
+    function syncBlockedKeyProperties(instance) {
+      var total = getRawLength(instance);
+      for (var i = 0; i < total; i++) {
+        var k = rawKey.call(instance, i);
+        if (k) maskBlockedKeyProperty(instance, k);
+      }
+    }
+
+    proto.getItem = function (key) {
+      syncBlockedKeyProperties(this);
+      if (isBlockedStorageKey(String(key))) return null;
+      return rawGetItem.call(this, key);
+    };
+
+    proto.setItem = function (key, value) {
+      if (isBlockedStorageKey(String(key))) return;
+      return rawSetItem.call(this, key, value);
+    };
+
+    proto.removeItem = function (key) {
+      if (isBlockedStorageKey(String(key))) return;
+      return rawRemoveItem.call(this, key);
+    };
+
+    proto.key = function (index) {
+      syncBlockedKeyProperties(this);
+      var visible = getVisibleKeys(this);
+      return visible[index] || null;
+    };
+
+    try {
+      Object.defineProperty(proto, "length", {
+        configurable: true,
+        enumerable: false,
+        get: function () {
+          syncBlockedKeyProperties(this);
+          return getVisibleKeys(this).length;
+        }
+      });
+    } catch {}
+
+    var proxyStorage = null;
+    try {
+      proxyStorage = new Proxy(storage, {
+        get: function (target, prop) {
+          if (typeof prop === "string" && isBlockedStorageKey(prop)) return null;
+          if (prop === "length") return getVisibleKeys(target).length;
+          if (prop === "key") {
+            return function (index) {
+              var visible = getVisibleKeys(target);
+              return visible[index] || null;
+            };
+          }
+
+          var value = target[prop];
+          if (typeof value === "function") return value.bind(target);
+          return value;
+        },
+        set: function (target, prop, value) {
+          if (typeof prop === "string" && isBlockedStorageKey(prop)) return true;
+          target[prop] = value;
+          return true;
+        },
+        has: function (target, prop) {
+          if (typeof prop === "string" && isBlockedStorageKey(prop)) return false;
+          return prop in target;
+        },
+        ownKeys: function (target) {
+          return getVisibleKeys(target);
+        },
+        getOwnPropertyDescriptor: function (target, prop) {
+          if (typeof prop === "string" && isBlockedStorageKey(prop)) {
+            return undefined;
+          }
+          if (prop === "length") {
+            return {
+              configurable: true,
+              enumerable: false,
+              value: getVisibleKeys(target).length,
+              writable: false
+            };
+          }
+          return Object.getOwnPropertyDescriptor(target, prop);
+        }
+      });
+    } catch {}
+
+    try {
+      if (proxyStorage) {
+        Object.defineProperty(window, storageName, {
+          configurable: true,
+          enumerable: true,
+          get: function () {
+            return proxyStorage;
+          }
+        });
+      }
+    } catch {}
+
+    syncBlockedKeyProperties(storage);
+    proto.__auraSupabaseFirewallPatched = true;
+  }
+
+  function patchCookieAccess() {
+    try {
+      var cookieDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, "cookie");
+      if (!cookieDescriptor || !cookieDescriptor.configurable) return;
+
+      Object.defineProperty(document, "cookie", {
+        configurable: true,
+        enumerable: false,
+        get: function () {
+          return "";
+        },
+        set: function () {
+          return true;
+        }
+      });
+    } catch {}
+  }
+
+  function patchFetch() {
+    if (typeof window.fetch !== "function") return;
+    var rawFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      if (requestLooksSensitive(input, init, null)) {
+        return Promise.reject(new Error("Blocked by Aura security policy"));
+      }
+      return rawFetch(input, init);
+    };
+  }
+
+  function patchXHR() {
+    if (typeof XMLHttpRequest === "undefined") return;
+    var rawOpen = XMLHttpRequest.prototype.open;
+    var rawSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+    var rawSend = XMLHttpRequest.prototype.send;
+
+    XMLHttpRequest.prototype.open = function (method, url) {
+      this.__auraRequestUrl = String(url || "");
+      this.__auraHeaders = {};
+      return rawOpen.apply(this, arguments);
+    };
+
+    XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+      if (!this.__auraHeaders) this.__auraHeaders = {};
+      this.__auraHeaders[String(name || "").toLowerCase()] = String(value || "");
+      return rawSetHeader.apply(this, arguments);
+    };
+
+    XMLHttpRequest.prototype.send = function () {
+      if (requestLooksSensitive(this.__auraRequestUrl || "", null, this.__auraHeaders || null)) {
+        throw new Error("Blocked by Aura security policy");
+      }
+      return rawSend.apply(this, arguments);
+    };
+  }
+
+  function patchBeacon() {
+    if (typeof navigator.sendBeacon !== "function") return;
+    var rawBeacon = navigator.sendBeacon.bind(navigator);
+    navigator.sendBeacon = function (url, data) {
+      if (requestLooksSensitive(url, null, null)) return false;
+      return rawBeacon(url, data);
+    };
+  }
+
+  function patchWebSocket() {
+    if (typeof WebSocket === "undefined") return;
+    var RawWebSocket = WebSocket;
+    window.WebSocket = function (url, protocols) {
+      if (requestLooksSensitive(String(url || ""), null, null)) {
+        throw new Error("Blocked by Aura security policy");
+      }
+      return new RawWebSocket(url, protocols);
+    };
+    window.WebSocket.prototype = RawWebSocket.prototype;
+  }
+
+  patchStorage(window.localStorage, "localStorage");
+  patchStorage(window.sessionStorage, "sessionStorage");
+  patchCookieAccess();
+  patchFetch();
+  patchXHR();
+  patchBeacon();
+  patchWebSocket();
+})();</script><meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>SIGNAL — Design System Showcase</title>
+<meta content="SIGNAL — the observability platform that connects metrics, traces, and logs across your entire stack. Real-time dashboards, AI-powered anomaly detection, and smart alerting for engineering teams." name="description"/>
+<meta content="SIGNAL — Observability Platform for Engineering Teams" property="og:title"/>
+<meta content="Connect metrics, traces, and logs across your entire stack. Real-time dashboards, AI-powered anomaly detection, and smart alerting." property="og:description"/>
+<meta content="website" property="og:type"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link crossorigin="" href="https://code.iconify.design" rel="preconnect"/>
+<link crossorigin="" href="https://cdnjs.cloudflare.com" rel="preconnect"/>
+<link crossorigin="" href="https://unpkg.com" rel="preconnect"/>
+<link href="assets/css2_bd7b568d6390.css" rel="stylesheet"/>
+<script async="" src="assets/iconify_654a1ef798a3.js"></script>
+<style>
+@property --glow-angle {
+syntax: '<angle>';
+initial-value: 0deg;
+inherits: false;
+}
+:root {
+--bg: #0a0a0a;
+--bg-elevated: #111111;
+--bg-card: #111111;
+--text: #f0ede6;
+--text-muted: #777;
+--text-soft: #999999;
+--accent: #c9835a;
+--accent-light: #e8c4a0;
+--accent-dark: #2a1810;
+--status-ok: #3dd68c;
+--status-warn: #f0a030;
+--status-crit: #e84040;
+--border: #1e1e1e;
+--border-glow: rgba(201, 131, 90, 0.25);
+--font-heading: 'Outfit', sans-serif;
+--font-body: 'IBM Plex Sans', sans-serif;
+--container: 1280px;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+::selection { background: var(--accent); color: var(--bg); }
+html { scrollbar-width: thin; scrollbar-color: var(--accent-dark) var(--bg); }
+body {
+font-family: var(--font-body);
+background: var(--bg);
+color: var(--text);
+overflow-x: hidden;
+-webkit-font-smoothing: antialiased;
+-moz-osx-font-smoothing: grayscale;
+}
+a { color: inherit; text-decoration: none; }
+button { border: none; background: none; color: inherit; cursor: pointer; font-family: inherit; }
+.container {
+width: 100%; max-width: var(--container);
+margin: 0 auto; padding: 0 clamp(1.25rem, 4vw, 3rem);
+}
+/* -- Canvas ------------------------------------------------ */
+#webgl {
+position: fixed; top: 0; left: 0;
+width: 100%; height: 100%; z-index: 1; pointer-events: none;
+}
+/* -- Film Grain ------------------------------------------- */
+.grain {
+position: fixed; inset: 0; z-index: 9998; pointer-events: none;
+opacity: 0.035;
+background-image: url("filter_3E_3Crect_width__100_25_3e1107789f64.html")'/%3E%3C/svg%3E");
+background-repeat: repeat;
+background-size: 256px 256px;
+}
+/* -- Nav -------------------------------------------------- */
+.nav {
+position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+padding: 1.25rem 0;
+transition: background 0.4s ease, padding 0.4s ease, backdrop-filter 0.4s ease;
+}
+.nav.is-scrolled {
+background: rgba(10, 10, 10, 0.85);
+backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+padding: 0.8rem 0;
+border-bottom: 1px solid var(--border);
+}
+.nav__inner { display: flex; align-items: center; justify-content: space-between; }
+.nav__logo {
+font-family: var(--font-heading); font-size: 1.15rem;
+font-weight: 800; letter-spacing: 0.12em; color: var(--accent);
+}
+.nav__links { display: flex; align-items: center; gap: 2rem; }
+.nav__links a {
+font-size: 0.82rem; font-weight: 500; letter-spacing: 0.02em;
+color: var(--text-muted); transition: color 0.3s ease; position: relative;
+}
+.nav__links a::after {
+content: ''; position: absolute; bottom: -4px; left: 0;
+width: 0; height: 1px; background: var(--accent); transition: width 0.3s ease;
+}
+.nav__links a:hover { color: var(--text); }
+.nav__links a:hover::after { width: 100%; }
+.nav__links a.is-active { color: var(--accent); }
+.nav__links a.is-active::after { width: 100%; }
+.nav__cta {
+display: inline-flex; align-items: center; gap: 0.5rem;
+font-family: var(--font-heading); font-size: 0.82rem; font-weight: 600;
+letter-spacing: 0.02em; padding: 0.6rem 1.4rem;
+background: var(--accent); color: var(--bg);
+border-radius: 8px; transition: all 0.35s ease;
+}
+.nav__cta:hover {
+background: var(--accent-light);
+box-shadow: 0 4px 20px rgba(201, 131, 90, 0.3);
+transform: translateY(-1px);
+}
+.nav__toggle { display: none; font-size: 1.4rem; color: var(--text); }
+/* -- Mobile Menu ------------------------------------------- */
+.mobile-menu {
+position: fixed; inset: 0; z-index: 200; background: var(--bg);
+display: flex; flex-direction: column;
+padding: 1.25rem clamp(1.25rem, 4vw, 3rem);
+transform: translateX(100%);
+transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mobile-menu.is-open { transform: translateX(0); }
+.mobile-menu__header { display: flex; align-items: center; justify-content: space-between; }
+.mobile-menu__close { font-size: 1.4rem; color: var(--text-muted); }
+.mobile-menu__nav { display: flex; flex-direction: column; margin-top: 3rem; }
+.mobile-menu__nav a {
+font-family: var(--font-heading); font-size: clamp(1.8rem, 7vw, 3rem);
+font-weight: 700; letter-spacing: -0.03em; padding: 0.7rem 0;
+color: var(--text-muted); transition: color 0.3s ease;
+border-bottom: 1px solid var(--border);
+}
+.mobile-menu__nav a:hover { color: var(--accent); }
+/* -- Section Utilities ------------------------------------ */
+.section {
+position: relative; z-index: 2;
+padding: clamp(5rem, 10vw, 8rem) 0;
+}
+.section--solid { background: var(--bg); }
+.section--elevated { background: var(--bg-elevated); }
+.section--transparent { background: transparent; }
+.section--dots {
+background-color: var(--bg);
+background-image: radial-gradient(circle, var(--accent) 0.7px, transparent 0.7px);
+background-size: 28px 28px;
+background-position: 14px 14px;
+}
+.section--dots::before {
+content: ''; position: absolute; inset: 0;
+background: var(--bg); opacity: 0.955; pointer-events: none;
+}
+.section--grid {
+background-color: transparent;
+background-image:
+linear-gradient(var(--accent) 0.5px, transparent 0.5px),
+linear-gradient(90deg, var(--accent) 0.5px, transparent 0.5px);
+background-size: 60px 60px;
+}
+.section--grid::before {
+content: ''; position: absolute; inset: 0; pointer-events: none;
+background:
+linear-gradient(180deg,
+rgba(10,10,10,0.95) 0%,
+rgba(10,10,10,0.75) 20%,
+rgba(10,10,10,0.45) 40%,
+rgba(10,10,10,0.45) 60%,
+rgba(10,10,10,0.75) 80%,
+rgba(10,10,10,0.95) 100%
+);
+}
+.section__bg-number {
+position: absolute; top: 0.3em; right: 5%;
+font-family: var(--font-heading); font-size: clamp(10rem, 22vw, 20rem);
+font-weight: 700; color: var(--text); opacity: 0.02;
+line-height: 1; pointer-events: none; user-select: none;
+z-index: 0;
+}
+.section-label {
+font-family: var(--font-heading);
+font-size: 0.7rem; font-weight: 600; letter-spacing: 0.2em;
+text-transform: uppercase; color: var(--accent);
+margin-bottom: clamp(2rem, 4vw, 3.5rem);
+display: flex; align-items: center; gap: 1rem;
+position: relative; z-index: 1;
+}
+.section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.section-title {
+font-family: var(--font-heading);
+font-size: clamp(1.8rem, 3.5vw, 2.8rem);
+font-weight: 700; line-height: 1.1; letter-spacing: -0.035em;
+margin-bottom: 1rem; position: relative; z-index: 1;
+}
+.section-desc {
+font-size: clamp(0.9rem, 1.1vw, 1rem); line-height: 1.8;
+color: var(--text-muted); max-width: 520px;
+position: relative; z-index: 1;
+}
+/* -- Buttons ---------------------------------------------- */
+.btn {
+display: inline-flex; align-items: center; gap: 0.6rem;
+font-family: var(--font-heading); font-size: 0.88rem;
+font-weight: 600; letter-spacing: 0.01em; padding: 0.85rem 1.8rem;
+border-radius: 10px; position: relative; overflow: hidden;
+transition: all 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+will-change: transform;
+}
+.btn--primary {
+background: var(--accent); color: var(--bg);
+}
+.btn--primary:hover {
+background: var(--accent-light);
+box-shadow: 0 4px 20px rgba(201, 131, 90, 0.3);
+transform: translateY(-2px);
+}
+.btn--ghost {
+background: rgba(201, 131, 90, 0.04); color: var(--text);
+border: 1px solid var(--border);
+backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+.btn--ghost:hover {
+border-color: var(--accent); color: var(--accent);
+background: rgba(201, 131, 90, 0.08);
+box-shadow: 0 0 20px rgba(201, 131, 90, 0.08);
+}
+.btn--large { font-size: 1rem; padding: 1.15rem 2.6rem; border-radius: 12px; }
+/* -- Hero ------------------------------------------------- */
+.hero {
+position: relative; z-index: 2;
+min-height: 100vh; min-height: 100svh;
+display: flex; align-items: center;
+padding: 8rem 0 4rem;
+}
+.hero__content { max-width: 760px; }
+.hero__badge {
+display: inline-flex; align-items: center; gap: 0.5rem;
+font-size: 0.75rem; font-weight: 500; letter-spacing: 0.04em;
+color: var(--accent); padding: 0.4rem 1rem;
+border: 1px solid var(--border-glow); border-radius: 100px;
+margin-bottom: 2rem;
+background: rgba(201, 131, 90, 0.05);
+}
+.hero__badge-dot {
+width: 6px; height: 6px; border-radius: 50%;
+background: var(--status-ok);
+box-shadow: 0 0 8px var(--status-ok);
+}
+.hero__title {
+font-family: var(--font-heading);
+font-size: clamp(3rem, 7.5vw, 5.5rem);
+font-weight: 800; line-height: 1.05; letter-spacing: -0.04em;
+margin-bottom: 1.5rem;
+}
+.hero__title-accent {
+background: linear-gradient(135deg, var(--accent) 0%, var(--accent-light) 100%);
+-webkit-background-clip: text; -webkit-text-fill-color: transparent;
+background-clip: text;
+}
+.hero__typed-cursor {
+display: inline-block; width: 3px; height: 0.85em;
+background: var(--accent); margin-left: 4px;
+vertical-align: text-bottom;
+animation: cursorBlink 0.7s step-end infinite;
+}
+@keyframes cursorBlink {
+0%, 100% { opacity: 1; }
+50% { opacity: 0; }
+}
+.hero__subtitle {
+font-size: clamp(1rem, 1.3vw, 1.15rem); line-height: 1.7;
+color: var(--text-muted); max-width: 480px;
+margin-bottom: 2.5rem;
+}
+.hero__actions { display: flex; gap: 1rem; flex-wrap: wrap; }
+/* -- Marquee ---------------------------------------------- */
+.marquee {
+position: relative; z-index: 2; overflow: hidden;
+padding: 1.5rem 0; background: var(--bg);
+border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+-webkit-mask-image: linear-gradient(to right, transparent 0%, black 8%, black 92%, transparent 100%);
+mask-image: linear-gradient(to right, transparent 0%, black 8%, black 92%, transparent 100%);
+}
+.marquee__track { display: flex; width: max-content; will-change: transform; }
+.marquee__content { display: flex; align-items: center; white-space: nowrap; flex-shrink: 0; }
+.marquee__item {
+font-family: var(--font-heading); font-size: clamp(0.9rem, 1.4vw, 1.15rem);
+font-weight: 500; letter-spacing: 0.02em;
+color: var(--text); opacity: 0.18; padding: 0 2rem;
+transition: opacity 0.4s ease;
+}
+.marquee__item:hover { opacity: 0.5; }
+.marquee__sep { color: var(--accent); opacity: 0.3; font-size: 0.5em; padding: 0 0.5rem; }
+/* -- Feature Highlights ----------------------------------- */
+.features__grid {
+display: grid; grid-template-columns: repeat(3, 1fr);
+gap: 1.5rem; position: relative; z-index: 1;
+}
+.feature-card {
+position: relative; padding: 2rem;
+background: var(--bg-card); border: 1px solid var(--border);
+border-radius: 12px; overflow: hidden;
+transition: border-color 0.4s ease, box-shadow 0.4s ease;
+}
+.feature-card:hover {
+border-color: var(--border-glow);
+box-shadow: 0 4px 30px rgba(201, 131, 90, 0.08);
+}
+.feature-card__spotlight {
+position: absolute; inset: 0; opacity: 0;
+transition: opacity 0.4s ease; pointer-events: none;
+background: radial-gradient(400px circle at var(--mx, 50%) var(--my, 50%),
+rgba(201, 131, 90, 0.06) 0%, transparent 70%);
+}
+.feature-card:hover .feature-card__spotlight { opacity: 1; }
+.feature-card__icon {
+width: 44px; height: 44px; border-radius: 10px;
+background: var(--accent-dark); color: var(--accent);
+display: flex; align-items: center; justify-content: center;
+font-size: 1.3rem; margin-bottom: 1.25rem;
+transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.feature-card:hover .feature-card__icon { transform: scale(1.08) rotate(4deg); }
+.feature-card__title {
+font-family: var(--font-heading); font-size: 1.05rem;
+font-weight: 600; letter-spacing: -0.01em; margin-bottom: 0.6rem;
+}
+.feature-card__desc {
+font-size: 0.85rem; color: var(--text-muted); line-height: 1.65;
+}
+/* -- Platform Preview ------------------------------------- */
+.platform { text-align: center; position: relative; z-index: 1; }
+.platform__frame {
+position: relative; margin-top: 3rem;
+border-radius: 12px; overflow: hidden;
+border: 1px solid var(--border);
+background: var(--bg-card);
+}
+.platform__topbar {
+display: flex; align-items: center; gap: 0.5rem;
+padding: 0.8rem 1.2rem; border-bottom: 1px solid var(--border);
+background: var(--bg-elevated);
+}
+.platform__dot {
+width: 8px; height: 8px; border-radius: 50%;
+}
+.platform__dot--red { background: var(--status-crit); opacity: 0.6; }
+.platform__dot--yellow { background: var(--status-warn); opacity: 0.6; }
+.platform__dot--green { background: var(--status-ok); opacity: 0.6; }
+.platform__url {
+font-size: 0.68rem; color: var(--text-muted); margin-left: 0.8rem;
+font-family: var(--font-body);
+}
+.platform__body {
+padding: 2rem;
+min-height: 340px;
+display: grid; grid-template-columns: 180px 1fr;
+gap: 1.5rem;
+}
+.platform__sidebar {
+display: flex; flex-direction: column; gap: 0.4rem;
+border-right: 1px solid var(--border); padding-right: 1.5rem;
+}
+.platform__sidebar-item {
+font-size: 0.75rem; color: var(--text-muted); padding: 0.5rem 0.8rem;
+border-radius: 6px; display: flex; align-items: center; gap: 0.5rem;
+transition: background 0.3s ease;
+}
+.platform__sidebar-item--active {
+background: var(--accent-dark); color: var(--accent);
+}
+.platform__main { display: flex; flex-direction: column; gap: 1rem; }
+.platform__chart {
+flex: 1; display: flex; align-items: flex-end; gap: 6px;
+padding: 1rem 0;
+}
+.platform__bar {
+flex: 1; border-radius: 3px 3px 0 0;
+background: var(--accent);
+opacity: 0.6;
+transition: height 0.6s ease;
+}
+.platform__metrics-row {
+display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.8rem;
+}
+.platform__metric-card {
+padding: 0.8rem; border-radius: 8px;
+border: 1px solid var(--border);
+background: var(--bg);
+}
+.platform__metric-val {
+font-family: var(--font-heading); font-size: 1.1rem;
+font-weight: 700; color: var(--accent); letter-spacing: -0.02em;
+}
+.platform__metric-label {
+font-size: 0.65rem; color: var(--text-muted); margin-top: 0.2rem;
+}
+/* -- Callouts --------------------------------------------- */
+.platform__callouts { position: absolute; inset: 0; pointer-events: none; }
+.platform__callout {
+position: absolute; padding: 0.5rem 0.8rem;
+background: rgba(10, 10, 10, 0.9); border: 1px solid var(--border-glow);
+border-radius: 8px; font-size: 0.72rem; color: var(--accent-light);
+white-space: nowrap; backdrop-filter: blur(8px);
+}
+.platform__callout--1 { top: 25%; right: -10px; transform: translateX(100%); }
+.platform__callout--2 { bottom: 30%; right: -10px; transform: translateX(100%); }
+.platform__callout--3 { top: 35%; left: -10px; transform: translateX(-100%); }
+/* -- Metrics Bar ------------------------------------------ */
+.metrics {
+position: relative; z-index: 2; background: var(--bg);
+border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+padding: clamp(2.5rem, 5vw, 4rem) 0;
+}
+.metrics__grid {
+display: grid; grid-template-columns: repeat(4, 1fr);
+gap: 0; position: relative;
+}
+.metrics__item {
+text-align: center; padding: 1rem 2rem;
+position: relative;
+}
+.metrics__item:not(:last-child)::after {
+content: ''; position: absolute; right: 0; top: 15%; height: 70%;
+width: 1px; background: var(--border);
+}
+.metrics__number {
+font-family: var(--font-heading);
+font-size: clamp(2rem, 4vw, 3rem);
+font-weight: 800; letter-spacing: -0.04em; color: var(--accent);
+display: block; margin-bottom: 0.3rem;
+}
+.metrics__label {
+font-size: 0.78rem; color: var(--text-muted); letter-spacing: 0.02em;
+}
+/* -- How It Works ----------------------------------------- */
+.steps__grid {
+display: grid; grid-template-columns: repeat(3, 1fr);
+gap: 0; position: relative; z-index: 1;
+}
+.step {
+text-align: center; padding: 2rem 1.5rem; position: relative;
+}
+.step__connector {
+position: absolute; top: calc(2rem + 27px); left: 50%; right: -50%;
+height: 2px; background: var(--border); z-index: 0;
+}
+.step:last-child .step__connector { display: none; }
+.step__connector-fill {
+width: 0; height: 100%; background: var(--accent);
+transition: width 1.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.step.is-active .step__connector-fill { width: 100%; }
+.step__icon {
+width: 56px; height: 56px; border-radius: 50%;
+background: var(--bg); border: 2px solid var(--border);
+display: flex; align-items: center; justify-content: center;
+font-size: 1.3rem; color: var(--accent);
+margin: 0 auto 1.25rem; position: relative; z-index: 2;
+transition: border-color 0.4s ease, box-shadow 0.4s ease;
+}
+.step.is-active .step__icon {
+border-color: var(--accent);
+box-shadow: 0 0 0 6px rgba(201, 131, 90, 0.15);
+}
+.step__pulse {
+position: absolute; inset: -6px; border-radius: 50%;
+border: 2px solid var(--accent); opacity: 0;
+}
+.step.is-active .step__pulse {
+animation: stepPulse 1.5s ease-out 0.5s;
+}
+@keyframes stepPulse {
+0% { transform: scale(1); opacity: 0.6; }
+100% { transform: scale(1.6); opacity: 0; }
+}
+.step__number {
+font-family: var(--font-heading); font-size: 0.65rem;
+font-weight: 600; letter-spacing: 0.15em; color: var(--accent);
+text-transform: uppercase; margin-bottom: 0.75rem;
+}
+.step__title {
+font-family: var(--font-heading); font-size: 1.1rem;
+font-weight: 600; letter-spacing: -0.01em; margin-bottom: 0.6rem;
+}
+.step__desc {
+font-size: 0.82rem; color: var(--text-muted); line-height: 1.65;
+max-width: 280px; margin: 0 auto;
+}
+/* -- Testimonial ------------------------------------------ */
+.testimonial {
+text-align: center; max-width: 780px; margin: 0 auto;
+position: relative; z-index: 1;
+}
+.testimonial__mark {
+font-family: Georgia, serif;
+font-size: clamp(5rem, 12vw, 8rem);
+font-weight: 400; color: var(--accent); opacity: 0.1;
+line-height: 0.4; margin-bottom: 2.5rem; display: block;
+}
+.testimonial__text {
+font-family: var(--font-heading);
+font-size: clamp(1.15rem, 2vw, 1.6rem);
+font-weight: 400; line-height: 1.55; letter-spacing: -0.01em;
+margin-bottom: 2rem; font-style: italic; color: var(--text);
+}
+.testimonial__author { display: flex; flex-direction: column; gap: 0.2rem; }
+.testimonial__name {
+font-family: var(--font-heading); font-weight: 600; font-size: 0.88rem;
+}
+.testimonial__role { font-size: 0.78rem; color: var(--text-muted); }
+/* -- Pricing Preview -------------------------------------- */
+.pricing-preview__grid {
+display: grid; grid-template-columns: repeat(3, 1fr);
+gap: 1.5rem; position: relative; z-index: 1;
+}
+.pricing-card {
+position: relative; padding: 2.5rem 2rem;
+background: var(--bg-card); border: 1px solid var(--border);
+border-radius: 12px;
+transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+box-shadow 0.5s ease, border-color 0.4s ease;
+transform-style: preserve-3d;
+}
+.pricing-card:hover {
+border-color: var(--border-glow);
+box-shadow: 0 8px 40px rgba(201, 131, 90, 0.1);
+}
+.pricing-card--featured {
+border-color: var(--accent);
+}
+.pricing-card__popular {
+position: absolute; top: -12px; left: 50%; transform: translateX(-50%);
+font-family: var(--font-heading); font-size: 0.68rem; font-weight: 600;
+letter-spacing: 0.08em; text-transform: uppercase;
+padding: 0.3rem 1rem; background: var(--accent); color: var(--bg);
+border-radius: 100px;
+}
+.pricing-card__name {
+font-family: var(--font-heading); font-size: 0.85rem;
+font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+color: var(--text-muted); margin-bottom: 0.6rem;
+}
+.pricing-card__price {
+font-family: var(--font-heading);
+font-size: clamp(2rem, 3.5vw, 2.8rem);
+font-weight: 800; letter-spacing: -0.04em; margin-bottom: 0.3rem;
+}
+.pricing-card__price span {
+font-size: 0.45em; font-weight: 400; color: var(--text-muted);
+}
+.pricing-card__desc {
+font-size: 0.82rem; color: var(--text-muted); margin-bottom: 1.5rem;
+line-height: 1.5;
+}
+.pricing-card__features { list-style: none; margin-bottom: 2rem; }
+.pricing-card__features li {
+font-size: 0.82rem; color: var(--text-muted);
+padding: 0.4rem 0; display: flex; align-items: center; gap: 0.6rem;
+}
+.pricing-card__features li .iconify { color: var(--accent); font-size: 1rem; }
+.pricing-card .btn { width: 100%; justify-content: center; }
+/* -- CTA -------------------------------------------------- */
+.cta {
+position: relative; z-index: 2; background: transparent;
+padding: clamp(6rem, 12vw, 10rem) 0;
+text-align: center;
+}
+.cta__title {
+font-family: var(--font-heading);
+font-size: clamp(2.2rem, 6vw, 4.5rem);
+font-weight: 800; line-height: 1.05;
+letter-spacing: -0.04em; margin-bottom: 1.5rem;
+}
+.cta__title-accent {
+background: linear-gradient(135deg, var(--accent) 0%, var(--accent-light) 100%);
+-webkit-background-clip: text; -webkit-text-fill-color: transparent;
+background-clip: text;
+}
+.cta__subtitle {
+font-size: 1rem; color: var(--text-muted); margin-bottom: 2.5rem;
+max-width: 440px; margin-left: auto; margin-right: auto; line-height: 1.6;
+}
+.cta__form {
+display: flex; gap: 0.75rem; max-width: 440px;
+margin: 0 auto; position: relative;
+}
+.cta__input {
+flex: 1; padding: 0.9rem 1.2rem;
+font-family: var(--font-body); font-size: 0.88rem;
+background: var(--bg-card); border: 1px solid var(--border);
+border-radius: 8px; color: var(--text); outline: none;
+transition: border-color 0.4s ease, box-shadow 0.4s ease;
+}
+.cta__input::placeholder { color: var(--text-muted); }
+.cta__input:focus {
+border-color: var(--accent);
+box-shadow: 0 0 0 3px rgba(201, 131, 90, 0.15);
+}
+.cta__input--glow:focus {
+border-image: conic-gradient(from var(--glow-angle), var(--accent), var(--accent-light), var(--accent)) 1;
+animation: glowRotate 3s linear infinite;
+}
+@keyframes glowRotate {
+to { --glow-angle: 360deg; }
+}
+/* -- Footer ----------------------------------------------- */
+.footer {
+position: relative; z-index: 2;
+background-color: var(--bg);
+background-image: radial-gradient(circle, var(--accent) 0.5px, transparent 0.5px);
+background-size: 24px 24px;
+border-top: 1px solid var(--border);
+padding: clamp(3rem, 6vw, 5rem) 0 2rem;
+}
+.footer::before {
+content: ''; position: absolute; inset: 0;
+background: var(--bg); opacity: 0.97; pointer-events: none;
+}
+.footer__inner { position: relative; z-index: 1; }
+.footer__grid {
+display: grid; grid-template-columns: 2fr 1fr 1fr 1fr;
+gap: clamp(2rem, 4vw, 4rem);
+margin-bottom: clamp(3rem, 5vw, 4rem);
+}
+.footer__logo {
+font-family: var(--font-heading); font-size: 1.15rem;
+font-weight: 800; letter-spacing: 0.12em; color: var(--accent);
+display: block; margin-bottom: 0.8rem;
+}
+.footer__logo-shimmer {
+background: linear-gradient(90deg, var(--accent), var(--accent-light), var(--accent));
+background-size: 200% 100%;
+-webkit-background-clip: text; -webkit-text-fill-color: transparent;
+background-clip: text;
+animation: shimmer 4s ease-in-out infinite;
+}
+@keyframes shimmer {
+0%, 100% { background-position: 0% 50%; }
+50% { background-position: 100% 50%; }
+}
+.footer__tagline {
+font-size: 0.85rem; color: var(--text-muted);
+line-height: 1.6; max-width: 280px;
+}
+.footer__col h4 {
+font-family: var(--font-heading); font-size: 0.7rem;
+font-weight: 600; letter-spacing: 0.15em; text-transform: uppercase;
+color: var(--text-muted); margin-bottom: 1rem;
+}
+.footer__col a {
+display: block; font-size: 0.85rem; color: var(--text-muted);
+padding: 0.3rem 0; transition: color 0.3s ease;
+}
+.footer__col a:hover { color: var(--accent); }
+.footer__bottom {
+display: flex; align-items: center; justify-content: space-between;
+padding-top: 2rem; border-top: 1px solid var(--border);
+font-size: 0.72rem; color: var(--text-muted);
+}
+.footer__bottom a { transition: color 0.3s ease; }
+.footer__bottom a:hover { color: var(--accent); }
+/* -- Divider ---------------------------------------------- */
+.divider {
+position: relative; z-index: 2; background: var(--bg);
+padding: 0; height: 1px;
+}
+.divider__line {
+width: 100%; height: 1px;
+background: var(--border);
+}
+/* -- Scroll Progress Bar ---------------------------------- */
+.scroll-progress {
+position: fixed; top: 0; left: 0; width: 0; height: 2px;
+background: linear-gradient(90deg, var(--accent), var(--accent-light));
+z-index: 9999; transition: none;
+box-shadow: 0 0 8px rgba(201,131,90,0.5);
+}
+/* -- Responsive ------------------------------------------- */
+@media (max-width: 1024px) {
+.features__grid { grid-template-columns: repeat(2, 1fr); }
+.pricing-preview__grid { grid-template-columns: repeat(2, 1fr); }
+.pricing-preview__grid .pricing-card:last-child {
+grid-column: 1 / -1; max-width: 400px; margin: 0 auto;
+}
+.platform__body { grid-template-columns: 1fr; }
+.platform__sidebar { flex-direction: row; flex-wrap: wrap; border-right: none; padding-right: 0; border-bottom: 1px solid var(--border); padding-bottom: 1rem; }
+.platform__callout { display: none; }
+.platform__metrics-row { grid-template-columns: repeat(2, 1fr); }
+.footer__grid { grid-template-columns: 1fr 1fr; gap: 2.5rem; }
+.section__bg-number { font-size: clamp(8rem, 18vw, 14rem); }
+}
+@media (max-width: 768px) {
+.nav__links, .nav__cta { display: none; }
+.nav__toggle { display: block; }
+.hero { padding: 7rem 0 3rem; }
+.hero__actions { flex-direction: column; }
+.hero__actions .btn { width: 100%; justify-content: center; }
+.features__grid { grid-template-columns: 1fr; }
+.steps__grid { grid-template-columns: 1fr; gap: 2rem; }
+.step__connector { display: none; }
+.step { padding: 1.5rem 1rem; }
+.metrics__grid { grid-template-columns: repeat(2, 1fr); }
+.metrics__item:nth-child(2)::after { display: none; }
+.pricing-preview__grid { grid-template-columns: 1fr; }
+.pricing-preview__grid .pricing-card:last-child {
+grid-column: auto; max-width: none; margin: 0; width: 100%;
+}
+.pricing-card { padding: 2rem 1.5rem; }
+.platform__metrics-row { grid-template-columns: repeat(2, 1fr); }
+.cta__form { flex-direction: column; }
+.cta__form .btn { width: 100%; justify-content: center; }
+.footer__grid { grid-template-columns: 1fr; gap: 2rem; }
+.section__bg-number { font-size: clamp(6rem, 16vw, 10rem); }
+.scroll-progress { height: 1px; }
+.testimonial__text { font-size: clamp(1rem, 3.5vw, 1.3rem); }
+.testimonial__mark { font-size: clamp(4rem, 10vw, 6rem); }
+}
+@media (max-width: 480px) {
+.hero__title { font-size: clamp(2.2rem, 11vw, 3.2rem); }
+.hero__subtitle { font-size: 0.95rem; }
+.btn--large { font-size: 0.9rem; padding: 1rem 1.8rem; }
+.metrics__grid { grid-template-columns: 1fr 1fr; }
+.metrics__item::after { display: none; }
+.metrics__number { font-size: clamp(1.6rem, 8vw, 2.2rem); }
+.platform__metrics-row { grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+.platform__metric-val { font-size: 0.9rem; }
+.pricing-card { padding: 1.8rem 1.2rem; }
+.pricing-card__price { font-size: clamp(1.8rem, 8vw, 2.4rem); }
+.cta__title { font-size: clamp(1.8rem, 9vw, 2.8rem); }
+.footer__bottom { flex-direction: column; gap: 0.5rem; text-align: center; }
+.section__bg-number { font-size: clamp(4rem, 14vw, 7rem); opacity: 0.015; }
+.testimonial__text { font-size: 0.95rem; }
+.step__desc { font-size: 0.78rem; }
+}
+@media (hover: none) {
+.feature-card:hover .feature-card__icon { transform: none; }
+.feature-card__spotlight { display: none; }
+.nav__cta:hover { background: var(--accent); transform: none; box-shadow: none; }
+.btn--primary:hover { transform: none; box-shadow: none; }
+.btn--ghost:hover { box-shadow: none; }
+.pricing-card:hover { transform: none; box-shadow: none; }
+.marquee__item { opacity: 0.25; }
+}
+@media (prefers-reduced-motion: reduce) {
+*, *::before, *::after {
+animation-duration: 0.01ms !important;
+transition-duration: 0.01ms !important;
+}
+}
+/* -- Skip Link -- */
+.skip-link { position: absolute; top: -100%; left: 1rem; z-index: 9999; padding: 0.75rem 1.5rem; background: var(--accent); color: var(--bg); border-radius: 0 0 8px 8px; font-size: 0.85rem; font-weight: 600; text-decoration: none; transition: top 0.2s; }
+.skip-link:focus { top: 0; }
+
+/* == DS Showcase Layout == */
+.ds-nav{position:sticky;top:0;z-index:300;background:var(--bg);border-bottom:1px solid var(--border);padding:0.8rem 0;}
+.ds-nav__list{display:flex;align-items:center;gap:1.5rem;list-style:none;overflow-x:auto;}
+.ds-nav__list a{font-family:var(--font-heading);font-size:0.78rem;font-weight:600;letter-spacing:0.02em;color:var(--text-muted);transition:color 0.3s ease;white-space:nowrap;}
+.ds-nav__list a:hover{color:var(--accent);}
+.ds-row{display:flex;align-items:baseline;justify-content:space-between;gap:2rem;padding:1.5rem 0;border-bottom:1px solid var(--border);}
+.ds-row:last-child{border-bottom:none;}
+.ds-row__name{font-family:var(--font-heading);font-size:0.72rem;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:var(--accent);min-width:120px;flex-shrink:0;}
+.ds-row__preview{flex:1;min-width:0;}
+.ds-row__spec{font-family:var(--font-body);font-size:0.75rem;color:var(--text-muted);text-align:right;flex-shrink:0;white-space:nowrap;}
+.ds-swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:1.5rem;}
+.ds-swatch{border:1px solid var(--border);border-radius:12px;overflow:hidden;}
+.ds-swatch__color{height:90px;}
+.ds-swatch__info{padding:0.8rem 1rem;background:var(--bg-card);border-top:1px solid var(--border);}
+.ds-swatch__label{font-family:var(--font-heading);font-size:0.82rem;font-weight:600;}
+.ds-swatch__value{font-size:0.72rem;color:var(--text-muted);margin-top:0.15rem;}
+.ds-group{margin-bottom:3rem;}
+.ds-group__title{font-family:var(--font-heading);font-size:1.05rem;font-weight:600;letter-spacing:-0.01em;margin-bottom:1.25rem;}
+.ds-flex{display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-end;}
+.ds-flex--col{flex-direction:column;align-items:stretch;}
+.ds-card{padding:2rem;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;}
+.ds-label{font-size:0.72rem;color:var(--text-muted);margin-bottom:0.75rem;font-family:var(--font-heading);letter-spacing:0.08em;text-transform:uppercase;}
+.ds-icon-grid{display:flex;flex-wrap:wrap;gap:1.5rem;}
+.ds-icon-item{display:flex;flex-direction:column;align-items:center;gap:0.5rem;padding:1.25rem;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;min-width:120px;}
+.ds-icon-item__name{font-size:0.65rem;color:var(--text-muted);font-family:var(--font-heading);text-align:center;}
+.ds-motion-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1.5rem;}
+</style>
+<script src="assets/resource_3fa48481346f.es"></script><style data-scroll-fix="true">
+        /* Scroll fixes for offline viewing */
+        html, body {
+            overflow: auto !important;
+            overflow-x: hidden !important;
+            height: auto !important;
+            min-height: 100% !important;
+            scroll-behavior: auto !important;
+            opacity: 1 !important;
+            visibility: visible !important;
+        }
+        
+        /* Force visibility - many sites use JS animations for initial display */
+        body, .wrapper, main, #__next, #app, .page, .content {
+            opacity: 1 !important;
+            visibility: visible !important;
+            transform: none !important;
+        }
+        
+        /* Disable loader/preloader overlays */
+        .loader, .preloader, .loading, [class*="loader"], [class*="preloader"] {
+            display: none !important;
+            opacity: 0 !important;
+        }
+        
+        /* Show elements that might be hidden for animation */
+        .word-inner, .char, .line, [data-aos], [data-scroll],
+        .hero-text span, .hero-fade, [class*="hero"] span {
+            opacity: 1 !important;
+            transform: none !important;
+            visibility: visible !important;
+        }
+        
+        /* Reset Tailwind animation utility classes */
+        .translate-y-full, .translate-x-full, .-translate-y-full, .-translate-x-full,
+        .translate-y-1\/2, .-translate-y-1\/2, .translate-y-\[100\%\], .translate-y-\[110\%\] {
+            transform: none !important;
+        }
+        
+        /* Force visibility on common hidden-for-animation patterns */
+        .opacity-0, [class*="opacity-0"] {
+            opacity: 1 !important;
+        }
+        
+        /* Reset scale transforms used for animations */
+        .scale-0, .scale-50, .scale-75 {
+            transform: none !important;
+        }
+        
+        html.lenis, html.lenis-smooth, 
+        body.lenis, body.lenis-smooth,
+        .lenis-wrapper, .lenis-content,
+        [data-lenis-prevent], [data-scroll-container] {
+            overflow: visible !important;
+            height: auto !important;
+        }
+        
+        /* Fix flex containers that might cut off content */
+        body.flex.items-center,
+        body.flex.justify-center {
+            align-items: flex-start !important;
+            min-height: 100vh;
+            height: auto !important;
+        }
+        
+        /* Ensure main content scrolls */
+        main, #__next, #__nuxt, #app, .main-content {
+            overflow: visible !important;
+            height: auto !important;
+        }
+        </style></head>
+<body>
+<a class="skip-link" href="#main-content">Skip to main content</a>
+<div class="grain"></div>
+<canvas aria-label="Animated 3D visualization" id="webgl" role="img"></canvas>
+<div class="scroll-progress" id="scrollProgress"></div>
+
+<!-- DS Top Nav -->
+<nav class="ds-nav" id="dsNav">
+<div class="container">
+<ul class="ds-nav__list">
+<li><a class="nav__logo" href="#">SIGNAL</a></li>
+<li><a href="#hero">Hero</a></li>
+<li><a href="#ds-typography">Typography</a></li>
+<li><a href="#ds-colors">Colors</a></li>
+<li><a href="#ds-components">Components</a></li>
+<li><a href="#ds-layout">Layout</a></li>
+<li><a href="#ds-motion">Motion</a></li>
+<li><a href="#ds-icons">Icons</a></li>
+</ul>
+</div>
+</nav>
+
+<main id="main-content">
+
+<!-- ============ 0) HERO — Exact Clone, Text Adapted ============ -->
+<section class="hero" id="hero">
+<div class="container">
+<div class="hero__content">
+<div class="hero__badge">
+<span class="hero__badge-dot"></span>
+                    SIGNAL Design System v1.0
+                </div>
+<h1 class="hero__title" id="heroTitle">
+                    Design System.<br/>
+                    Pattern <span class="hero__title-accent" id="heroAccent">Library</span><span class="hero__typed-cursor" id="heroCursor"></span>
+</h1>
+<p class="hero__subtitle">Living reference of every token, component, and animation used across the platform. Built for consistency at scale.</p>
+<div class="hero__actions">
+<a class="btn btn--primary btn--large" href="#ds-typography">
+                        Explore Tokens
+                        <span class="iconify" data-icon="solar:arrow-right-linear" data-width="16"></span>
+</a>
+<a class="btn btn--ghost btn--large" href="#ds-components">
+<span class="iconify" data-icon="solar:play-circle-linear" data-width="18"></span>
+                        View Components
+                    </a>
+</div>
+</div>
+</div>
+</section>
+
+<!-- Logo Marquee -->
+<div class="marquee" id="marquee">
+<div class="marquee__track" id="marqueeTrack">
+<div class="marquee__content">
+<span class="marquee__item">Stripe</span><span class="marquee__sep">•</span>
+<span class="marquee__item">Vercel</span><span class="marquee__sep">•</span>
+<span class="marquee__item">Linear</span><span class="marquee__sep">•</span>
+<span class="marquee__item">Notion</span><span class="marquee__sep">•</span>
+<span class="marquee__item">Figma</span><span class="marquee__sep">•</span>
+<span class="marquee__item">Shopify</span><span class="marquee__sep">•</span>
+<span class="marquee__item">GitLab</span><span class="marquee__sep">•</span>
+<span class="marquee__item">Datadog</span><span class="marquee__sep">•</span>
+</div>
+<div aria-hidden="true" class="marquee__content">
+<span class="marquee__item">Stripe</span><span class="marquee__sep">•</span>
+<span class="marquee__item">Vercel</span><span class="marquee__sep">•</span>
+<span class="marquee__item">Linear</span><span class="marquee__sep">•</span>
+<span class="marquee__item">Notion</span><span class="marquee__sep">•</span>
+<span class="marquee__item">Figma</span><span class="marquee__sep">•</span>
+<span class="marquee__item">Shopify</span><span class="marquee__sep">•</span>
+<span class="marquee__item">GitLab</span><span class="marquee__sep">•</span>
+<span class="marquee__item">Datadog</span><span class="marquee__sep">•</span>
+</div>
+</div>
+</div>
+
+<!-- ============ 1) TYPOGRAPHY ============ -->
+<section class="section section--solid" id="ds-typography">
+<div class="container">
+<span class="section__bg-number">01</span>
+<div class="section-label">Typography</div>
+<h2 class="section-title">Type Scale &amp; Hierarchy</h2>
+<p class="section-desc">Every text style used across the interface, rendered with original classes.</p>
+
+<div class="ds-group">
+<div class="ds-row">
+<span class="ds-row__name">Heading 1</span>
+<div class="ds-row__preview"><h1 class="hero__title">Observe Everything</h1></div>
+<span class="ds-row__spec">clamp(3rem, 7.5vw, 5.5rem) / 1.05</span>
+</div>
+<div class="ds-row">
+<span class="ds-row__name">H1 Gradient</span>
+<div class="ds-row__preview"><h1 class="hero__title"><span class="hero__title-accent">Accent Gradient</span></h1></div>
+<span class="ds-row__spec">linear-gradient / 1.05</span>
+</div>
+<div class="ds-row">
+<span class="ds-row__name">Heading 2</span>
+<div class="ds-row__preview"><h2 class="section-title">Section Title</h2></div>
+<span class="ds-row__spec">clamp(1.8rem, 3.5vw, 2.8rem) / 1.1</span>
+</div>
+<div class="ds-row">
+<span class="ds-row__name">CTA Title</span>
+<div class="ds-row__preview"><h2 class="cta__title">Start <span class="cta__title-accent">Monitoring</span></h2></div>
+<span class="ds-row__spec">clamp(2.2rem, 6vw, 4.5rem) / 1.05</span>
+</div>
+<div class="ds-row">
+<span class="ds-row__name">Heading 3</span>
+<div class="ds-row__preview"><h3 class="feature-card__title">Feature Card Title</h3></div>
+<span class="ds-row__spec">1.05rem / 600</span>
+</div>
+<div class="ds-row">
+<span class="ds-row__name">Heading 3 Alt</span>
+<div class="ds-row__preview"><h3 class="step__title">Step Title</h3></div>
+<span class="ds-row__spec">1.1rem / 600</span>
+</div>
+<div class="ds-row">
+<span class="ds-row__name">Heading 4</span>
+<div class="ds-row__preview"><div class="section-label">Section Label</div></div>
+<span class="ds-row__spec">0.7rem / 0.2em spacing</span>
+</div>
+<div class="ds-row">
+<span class="ds-row__name">Bold L</span>
+<div class="ds-row__preview"><span class="metrics__number">99.9%</span></div>
+<span class="ds-row__spec">clamp(2rem, 4vw, 3rem) / 800</span>
+</div>
+<div class="ds-row">
+<span class="ds-row__name">Bold M</span>
+<div class="ds-row__preview"><div class="pricing-card__price">$99 <span>/mo</span></div></div>
+<span class="ds-row__spec">clamp(2rem, 3.5vw, 2.8rem) / 800</span>
+</div>
+<div class="ds-row">
+<span class="ds-row__name">Bold S</span>
+<div class="ds-row__preview"><div class="platform__metric-val">99.98%</div></div>
+<span class="ds-row__spec">1.1rem / 700</span>
+</div>
+<div class="ds-row">
+<span class="ds-row__name">Paragraph</span>
+<div class="ds-row__preview"><p class="hero__subtitle">Real-time observability powered by AI. Ingest logs, metrics, and traces — detect anomalies before they become incidents.</p></div>
+<span class="ds-row__spec">clamp(1rem, 1.3vw, 1.15rem) / 1.7</span>
+</div>
+<div class="ds-row">
+<span class="ds-row__name">Regular L</span>
+<div class="ds-row__preview"><p class="section-desc">One unified platform for logs, metrics, traces, and incidents.</p></div>
+<span class="ds-row__spec">clamp(0.9rem, 1.1vw, 1rem) / 1.8</span>
+</div>
+<div class="ds-row">
+<span class="ds-row__name">Regular M</span>
+<div class="ds-row__preview"><p class="feature-card__desc">Live infrastructure views with sub-second refresh rates. Custom layouts.</p></div>
+<span class="ds-row__spec">0.85rem / 1.65</span>
+</div>
+<div class="ds-row">
+<span class="ds-row__name">Regular S</span>
+<div class="ds-row__preview"><span class="platform__metric-label">Uptime</span></div>
+<span class="ds-row__spec">0.65rem / normal</span>
+</div>
+</div>
+</div>
+</section>
+
+<!-- ============ 2) COLORS & SURFACES ============ -->
+<section class="section section--dots" id="ds-colors">
+<div class="container">
+<span class="section__bg-number">02</span>
+<div class="section-label">Colors &amp; Surfaces</div>
+<h2 class="section-title">Design Tokens</h2>
+<p class="section-desc">Core palette, backgrounds, borders, and gradients.</p>
+
+<div class="ds-group">
+<div class="ds-group__title">Core Palette</div>
+<div class="ds-swatches">
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="accent"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--accent</div><div class="ds-swatch__value">#c9835a</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="accent-light"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--accent-light</div><div class="ds-swatch__value">#e8c4a0</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="accent-dark"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--accent-dark</div><div class="ds-swatch__value">#2a1810</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="text"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--text</div><div class="ds-swatch__value">#f0ede6</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="text-muted"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--text-muted</div><div class="ds-swatch__value">#777</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="text-soft"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--text-soft</div><div class="ds-swatch__value">#999</div></div></div>
+</div>
+</div>
+
+<div class="ds-group">
+<div class="ds-group__title">Status Colors</div>
+<div class="ds-swatches">
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="status-ok"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--status-ok</div><div class="ds-swatch__value">#3dd68c</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="status-warn"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--status-warn</div><div class="ds-swatch__value">#f0a030</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="status-crit"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--status-crit</div><div class="ds-swatch__value">#e84040</div></div></div>
+</div>
+</div>
+
+<div class="ds-group">
+<div class="ds-group__title">Backgrounds &amp; Surfaces</div>
+<div class="ds-swatches">
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="bg"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--bg</div><div class="ds-swatch__value">#0a0a0a · Page</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="bg-elevated"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--bg-elevated</div><div class="ds-swatch__value">#111 · Sections</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="bg-card"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--bg-card</div><div class="ds-swatch__value">#111 · Cards</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="border"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--border</div><div class="ds-swatch__value">#1e1e1e</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="border-glow"></div><div class="ds-swatch__info"><div class="ds-swatch__label">--border-glow</div><div class="ds-swatch__value">rgba(201,131,90,0.25)</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="glass"></div><div class="ds-swatch__info"><div class="ds-swatch__label">Nav Glass</div><div class="ds-swatch__value">rgba(10,10,10,0.85) + blur(24px)</div></div></div>
+</div>
+</div>
+
+<div class="ds-group">
+<div class="ds-group__title">Gradients</div>
+<div class="ds-swatches">
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="grad-accent"></div><div class="ds-swatch__info"><div class="ds-swatch__label">Accent Gradient</div><div class="ds-swatch__value">135deg accent → accent-light · Hero title, CTA</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="grad-shimmer"></div><div class="ds-swatch__info"><div class="ds-swatch__label">Shimmer</div><div class="ds-swatch__value">90deg accent → accent-light → accent · Footer logo</div></div></div>
+<div class="ds-swatch"><div class="ds-swatch__color" data-bg="grad-progress"></div><div class="ds-swatch__info"><div class="ds-swatch__label">Progress Bar</div><div class="ds-swatch__value">90deg accent → accent-light · Scroll progress</div></div></div>
+</div>
+</div>
+</div>
+</section>
+
+<!-- ============ 3) UI COMPONENTS ============ -->
+<section class="section section--grid" id="ds-components">
+<div class="container">
+<span class="section__bg-number">03</span>
+<div class="section-label">UI Components</div>
+<h2 class="section-title">Interactive Elements</h2>
+<p class="section-desc">Buttons, inputs, cards — all states shown.</p>
+
+<div class="ds-group">
+<div class="ds-group__title">Buttons</div>
+<div class="ds-card">
+<div class="ds-flex">
+<div>
+<div class="ds-label">Primary · Default → Hover</div>
+<div class="ds-flex">
+<button class="btn btn--primary">Get Started <span class="iconify" data-icon="solar:arrow-right-linear" data-width="14"></span></button>
+<button class="btn btn--primary btn--large">Start Free Trial <span class="iconify" data-icon="solar:arrow-right-linear" data-width="16"></span></button>
+</div>
+</div>
+<div>
+<div class="ds-label">Ghost · Default → Hover</div>
+<div class="ds-flex">
+<button class="btn btn--ghost">See Full Pricing <span class="iconify" data-icon="solar:arrow-right-linear" data-width="14"></span></button>
+<button class="btn btn--ghost btn--large"><span class="iconify" data-icon="solar:play-circle-linear" data-width="18"></span> Watch Demo</button>
+</div>
+</div>
+<div>
+<div class="ds-label">Nav CTA</div>
+<a class="nav__cta" href="#" onclick="return false">Get Started <span class="iconify" data-icon="solar:arrow-right-linear" data-width="14"></span></a>
+</div>
+</div>
+</div>
+</div>
+
+<div class="ds-group">
+<div class="ds-group__title">Inputs</div>
+<div class="ds-card">
+<div class="ds-flex">
+<div class="ds-flex--col">
+<div class="ds-label">Default → Focus</div>
+<div class="cta__form">
+<input aria-label="Email" class="cta__input" placeholder="Enter your work email" type="email"/>
+</div>
+</div>
+<div class="ds-flex--col">
+<div class="ds-label">Glow Focus (animated border)</div>
+<div class="cta__form">
+<input aria-label="Email" class="cta__input cta__input--glow" placeholder="Click to see glow…" type="email"/>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<div class="ds-group">
+<div class="ds-group__title">Feature Card (hover for spotlight + icon lift)</div>
+<div class="features__grid">
+<div class="feature-card">
+<div class="feature-card__spotlight"></div>
+<div class="feature-card__icon"><span class="iconify" data-icon="solar:chart-2-bold-duotone" data-width="22"></span></div>
+<h3 class="feature-card__title">Real-time Dashboards</h3>
+<p class="feature-card__desc">Live infrastructure views with sub-second refresh rates. Custom layouts, drag-and-drop widgets.</p>
+</div>
+<div class="feature-card">
+<div class="feature-card__spotlight"></div>
+<div class="feature-card__icon"><span class="iconify" data-icon="solar:shield-warning-bold-duotone" data-width="22"></span></div>
+<h3 class="feature-card__title">AI Anomaly Detection</h3>
+<p class="feature-card__desc">Machine learning models trained on your baseline metrics. Catch issues before alerts fire.</p>
+</div>
+<div class="feature-card">
+<div class="feature-card__spotlight"></div>
+<div class="feature-card__icon"><span class="iconify" data-icon="solar:bell-bing-bold-duotone" data-width="22"></span></div>
+<h3 class="feature-card__title">Smart Alerting</h3>
+<p class="feature-card__desc">Context-aware alerts with automatic deduplication, severity ranking, and intelligent routing.</p>
+</div>
+</div>
+</div>
+
+<div class="ds-group">
+<div class="ds-group__title">Pricing Card (hover for glow + 3D tilt)</div>
+<div class="pricing-preview__grid">
+<div class="pricing-card">
+<div class="pricing-card__name">Starter</div>
+<div class="pricing-card__price">$29 <span>/mo</span></div>
+<p class="pricing-card__desc">For small teams getting started with observability.</p>
+<ul class="pricing-card__features">
+<li><span class="iconify" data-icon="solar:check-circle-bold" data-width="16"></span> 5 team members</li>
+<li><span class="iconify" data-icon="solar:check-circle-bold" data-width="16"></span> 10M events/month</li>
+</ul>
+<a class="btn btn--ghost" href="#">Get Started</a>
+</div>
+<div class="pricing-card pricing-card--featured">
+<div class="pricing-card__popular">Most Popular</div>
+<div class="pricing-card__name">Pro</div>
+<div class="pricing-card__price">$99 <span>/mo</span></div>
+<p class="pricing-card__desc">For growing teams that need deeper insights.</p>
+<ul class="pricing-card__features">
+<li><span class="iconify" data-icon="solar:check-circle-bold" data-width="16"></span> 25 team members</li>
+<li><span class="iconify" data-icon="solar:check-circle-bold" data-width="16"></span> AI root cause analysis</li>
+</ul>
+<a class="btn btn--primary" href="#">Start Free Trial</a>
+</div>
+</div>
+</div>
+
+<div class="ds-group">
+<div class="ds-group__title">Badge &amp; Status Dot</div>
+<div class="ds-card">
+<div class="ds-flex">
+<div class="hero__badge"><span class="hero__badge-dot"></span> Trusted by 500+ engineering teams</div>
+</div>
+</div>
+</div>
+
+<div class="ds-group">
+<div class="ds-group__title">Testimonial</div>
+<div class="testimonial">
+<span class="testimonial__mark">&#8220;</span>
+<blockquote class="testimonial__text">SIGNAL cut our mean-time-to-resolution by 73%. The AI root cause analysis is genuinely magic.</blockquote>
+<div class="testimonial__author">
+<span class="testimonial__name">Marcus Rivera</span>
+<span class="testimonial__role">VP Engineering, Stripe Infrastructure</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+
+<!-- ============ 4) LAYOUT & SPACING ============ -->
+<section class="section section--solid" id="ds-layout">
+<div class="container">
+<span class="section__bg-number">04</span>
+<div class="section-label">Layout &amp; Spacing</div>
+<h2 class="section-title">Structural Patterns</h2>
+<p class="section-desc">Containers, grids, and section rhythms.</p>
+
+<div class="ds-group">
+<div class="ds-group__title">1 — Platform Split (sidebar + main)</div>
+<div class="platform__frame">
+<div class="platform__topbar">
+<span class="platform__dot platform__dot--red"></span>
+<span class="platform__dot platform__dot--yellow"></span>
+<span class="platform__dot platform__dot--green"></span>
+<span class="platform__url">app.signal.dev/dashboard</span>
+</div>
+<div class="platform__body">
+<div class="platform__sidebar">
+<div class="platform__sidebar-item platform__sidebar-item--active"><span class="iconify" data-icon="solar:chart-2-linear" data-width="14"></span> Overview</div>
+<div class="platform__sidebar-item"><span class="iconify" data-icon="solar:document-text-linear" data-width="14"></span> Logs</div>
+<div class="platform__sidebar-item"><span class="iconify" data-icon="solar:tuning-2-linear" data-width="14"></span> Metrics</div>
+</div>
+<div class="platform__main">
+<div class="platform__metrics-row">
+<div class="platform__metric-card"><div class="platform__metric-val">99.98%</div><div class="platform__metric-label">Uptime</div></div>
+<div class="platform__metric-card"><div class="platform__metric-val">42ms</div><div class="platform__metric-label">P99 Latency</div></div>
+<div class="platform__metric-card"><div class="platform__metric-val">2.4B</div><div class="platform__metric-label">Events/Day</div></div>
+<div class="platform__metric-card"><div class="platform__metric-val">3</div><div class="platform__metric-label">Active Alerts</div></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<div class="ds-group">
+<div class="ds-group__title">2 — Three-Column Grid (.features__grid)</div>
+<div class="features__grid">
+<div class="ds-card"><div class="ds-label">Column 1 of 3</div></div>
+<div class="ds-card"><div class="ds-label">Column 2 of 3</div></div>
+<div class="ds-card"><div class="ds-label">Column 3 of 3</div></div>
+</div>
+</div>
+
+<div class="ds-group">
+<div class="ds-group__title">3 — Metrics Strip (.metrics__grid)</div>
+<div class="metrics">
+<div class="container">
+<div class="metrics__grid">
+<div class="metrics__item"><span class="metrics__number">99.9</span><span class="metrics__label">% Uptime SLA</span></div>
+<div class="metrics__item"><span class="metrics__number">2B+</span><span class="metrics__label">Events Daily</span></div>
+<div class="metrics__item"><span class="metrics__number">500+</span><span class="metrics__label">Teams</span></div>
+<div class="metrics__item"><span class="metrics__number">&lt;100ms</span><span class="metrics__label">Query P99</span></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+
+<!-- ============ 5) MOTION & INTERACTION ============ -->
+<section class="section section--dots" id="ds-motion">
+<div class="container">
+<span class="section__bg-number">05</span>
+<div class="section-label">Motion &amp; Interaction</div>
+<h2 class="section-title">Animation Gallery</h2>
+<p class="section-desc">Every keyframe and transition present in the design.</p>
+
+<div class="ds-motion-grid">
+
+<div class="ds-card">
+<div class="ds-label">cursorBlink · 0.7s step-end infinite</div>
+<h1 class="hero__title">Type<span class="hero__typed-cursor"></span></h1>
+</div>
+
+<div class="ds-card">
+<div class="ds-label">shimmer · 4s ease-in-out infinite</div>
+<span class="footer__logo footer__logo-shimmer">SIGNAL</span>
+</div>
+
+<div class="ds-card">
+<div class="ds-label">stepPulse · 1.5s ease-out 0.5s</div>
+<div class="step is-active">
+<div class="step__icon">
+<span class="iconify" data-icon="solar:eye-bold-duotone" data-width="24"></span>
+<div class="step__pulse"></div>
+</div>
+</div>
+</div>
+
+<div class="ds-card">
+<div class="ds-label">btn hover · translateY(-2px) 0.4s cubic-bezier</div>
+<button class="btn btn--primary">Hover Me <span class="iconify" data-icon="solar:arrow-right-linear" data-width="14"></span></button>
+</div>
+
+<div class="ds-card">
+<div class="ds-label">feature-card spotlight + icon rotate · 0.4s</div>
+<div class="feature-card">
+<div class="feature-card__spotlight"></div>
+<div class="feature-card__icon"><span class="iconify" data-icon="solar:routing-2-bold-duotone" data-width="22"></span></div>
+<h3 class="feature-card__title">Hover this card</h3>
+<p class="feature-card__desc">Spotlight follows cursor, icon scales and rotates on hover.</p>
+</div>
+</div>
+
+<div class="ds-card">
+<div class="ds-label">nav link underline · width 0→100% 0.3s</div>
+<div class="nav__links">
+<a href="#" onclick="return false">Features</a>
+<a href="#" onclick="return false">Pricing</a>
+</div>
+</div>
+
+<div class="ds-card">
+<div class="ds-label">glowRotate · --glow-angle 3s linear infinite</div>
+<div class="cta__form"><input class="cta__input cta__input--glow" placeholder="Focus for glow…" type="text"/></div>
+</div>
+
+<div class="ds-card">
+<div class="ds-label">marquee__item opacity · 0.18→0.5 on hover</div>
+<span class="marquee__item">Stripe</span>
+<span class="marquee__sep">•</span>
+<span class="marquee__item">Vercel</span>
+</div>
+
+</div>
+</div>
+</section>
+
+<!-- ============ 6) ICONS ============ -->
+<section class="section section--solid" id="ds-icons">
+<div class="container">
+<span class="section__bg-number">06</span>
+<div class="section-label">Icons</div>
+<h2 class="section-title">Iconography</h2>
+<p class="section-desc">Solar icon set via Iconify. All icons used in the reference.</p>
+
+<div class="ds-group">
+<div class="ds-group__title">Duotone (Feature Cards, Steps)</div>
+<div class="ds-icon-grid">
+<div class="ds-icon-item"><div class="feature-card__icon"><span class="iconify" data-icon="solar:chart-2-bold-duotone" data-width="22"></span></div><div class="ds-icon-item__name">chart-2</div></div>
+<div class="ds-icon-item"><div class="feature-card__icon"><span class="iconify" data-icon="solar:shield-warning-bold-duotone" data-width="22"></span></div><div class="ds-icon-item__name">shield-warning</div></div>
+<div class="ds-icon-item"><div class="feature-card__icon"><span class="iconify" data-icon="solar:bell-bing-bold-duotone" data-width="22"></span></div><div class="ds-icon-item__name">bell-bing</div></div>
+<div class="ds-icon-item"><div class="feature-card__icon"><span class="iconify" data-icon="solar:routing-2-bold-duotone" data-width="22"></span></div><div class="ds-icon-item__name">routing-2</div></div>
+<div class="ds-icon-item"><div class="feature-card__icon"><span class="iconify" data-icon="solar:document-text-bold-duotone" data-width="22"></span></div><div class="ds-icon-item__name">document-text</div></div>
+<div class="ds-icon-item"><div class="feature-card__icon"><span class="iconify" data-icon="solar:server-square-cloud-bold-duotone" data-width="22"></span></div><div class="ds-icon-item__name">server-square-cloud</div></div>
+<div class="ds-icon-item"><div class="feature-card__icon"><span class="iconify" data-icon="solar:plug-circle-bold-duotone" data-width="22"></span></div><div class="ds-icon-item__name">plug-circle</div></div>
+<div class="ds-icon-item"><div class="feature-card__icon"><span class="iconify" data-icon="solar:eye-bold-duotone" data-width="22"></span></div><div class="ds-icon-item__name">eye</div></div>
+<div class="ds-icon-item"><div class="feature-card__icon"><span class="iconify" data-icon="solar:verified-check-bold-duotone" data-width="22"></span></div><div class="ds-icon-item__name">verified-check</div></div>
+</div>
+</div>
+
+<div class="ds-group">
+<div class="ds-group__title">Linear (Nav, Sidebar, Callouts)</div>
+<div class="ds-icon-grid">
+<div class="ds-icon-item"><span class="iconify" data-icon="solar:arrow-right-linear" data-width="20"></span><div class="ds-icon-item__name">arrow-right</div></div>
+<div class="ds-icon-item"><span class="iconify" data-icon="solar:play-circle-linear" data-width="20"></span><div class="ds-icon-item__name">play-circle</div></div>
+<div class="ds-icon-item"><span class="iconify" data-icon="solar:chart-2-linear" data-width="20"></span><div class="ds-icon-item__name">chart-2</div></div>
+<div class="ds-icon-item"><span class="iconify" data-icon="solar:document-text-linear" data-width="20"></span><div class="ds-icon-item__name">document-text</div></div>
+<div class="ds-icon-item"><span class="iconify" data-icon="solar:tuning-2-linear" data-width="20"></span><div class="ds-icon-item__name">tuning-2</div></div>
+<div class="ds-icon-item"><span class="iconify" data-icon="solar:routing-2-linear" data-width="20"></span><div class="ds-icon-item__name">routing-2</div></div>
+<div class="ds-icon-item"><span class="iconify" data-icon="solar:bell-linear" data-width="20"></span><div class="ds-icon-item__name">bell</div></div>
+<div class="ds-icon-item"><span class="iconify" data-icon="solar:bolt-linear" data-width="20"></span><div class="ds-icon-item__name">bolt</div></div>
+<div class="ds-icon-item"><span class="iconify" data-icon="solar:graph-linear" data-width="20"></span><div class="ds-icon-item__name">graph</div></div>
+<div class="ds-icon-item"><span class="iconify" data-icon="solar:shield-check-linear" data-width="20"></span><div class="ds-icon-item__name">shield-check</div></div>
+<div class="ds-icon-item"><span class="iconify" data-icon="solar:hamburger-menu-linear" data-width="20"></span><div class="ds-icon-item__name">hamburger-menu</div></div>
+<div class="ds-icon-item"><span class="iconify" data-icon="solar:close-circle-linear" data-width="20"></span><div class="ds-icon-item__name">close-circle</div></div>
+</div>
+</div>
+
+<div class="ds-group">
+<div class="ds-group__title">Bold (Checkmarks)</div>
+<div class="ds-icon-grid">
+<div class="ds-icon-item"><span class="iconify" data-icon="solar:check-circle-bold" data-width="20"></span><div class="ds-icon-item__name">check-circle</div></div>
+</div>
+</div>
+
+</div>
+</section>
+
+</main>
+
+<!-- Footer -->
+<footer class="footer">
+<div class="container footer__inner">
+<div class="footer__grid">
+<div>
+<span class="footer__logo footer__logo-shimmer">SIGNAL</span>
+<p class="footer__tagline">Design System — living pattern library for SIGNAL platform.</p>
+</div>
+<div class="footer__col">
+<h4>Sections</h4>
+<a href="#hero">Hero</a>
+<a href="#ds-typography">Typography</a>
+<a href="#ds-colors">Colors</a>
+<a href="#ds-components">Components</a>
+</div>
+<div class="footer__col">
+<h4>Structure</h4>
+<a href="#ds-layout">Layout</a>
+<a href="#ds-motion">Motion</a>
+<a href="#ds-icons">Icons</a>
+</div>
+</div>
+<div class="footer__bottom">
+<span>&copy; 2026 SIGNAL. Design System Showcase.</span>
+<span>SOC 2 Type II Certified</span>
+</div>
+</div>
+</footer>
+
+<script>
+/* DS swatch coloring */
+document.querySelectorAll('[data-bg]').forEach(function(el){
+  var map = {
+    'accent':'var(--accent)','accent-light':'var(--accent-light)','accent-dark':'var(--accent-dark)',
+    'text':'var(--text)','text-muted':'var(--text-muted)','text-soft':'var(--text-soft)',
+    'status-ok':'var(--status-ok)','status-warn':'var(--status-warn)','status-crit':'var(--status-crit)',
+    'bg':'var(--bg)','bg-elevated':'var(--bg-elevated)','bg-card':'var(--bg-card)',
+    'border':'var(--border)','border-glow':'var(--border-glow)',
+    'glass':'rgba(10,10,10,0.85)',
+    'grad-accent':'linear-gradient(135deg,var(--accent) 0%,var(--accent-light) 100%)',
+    'grad-shimmer':'linear-gradient(90deg,var(--accent),var(--accent-light),var(--accent))',
+    'grad-progress':'linear-gradient(90deg,var(--accent),var(--accent-light))'
+  };
+  el.style.background = map[el.dataset.bg] || 'var(--bg)';
+  if(el.dataset.bg==='glass'){el.style.backdropFilter='blur(24px)';el.style.webkitBackdropFilter='blur(24px)';}
+});
+/* Feature card spotlight tracking */
+document.querySelectorAll('.feature-card').forEach(function(card){
+  card.addEventListener('mousemove',function(e){
+    var r=card.getBoundingClientRect();
+    card.querySelector('.feature-card__spotlight').style.setProperty('--mx',e.clientX-r.left+'px');
+    card.querySelector('.feature-card__spotlight').style.setProperty('--my',e.clientY-r.top+'px');
+  });
+});
+</script>
+<!-- Scripts -->
+<script src="assets/three_1aecfa5aa56f.js"></script>
+<script src="assets/gsap_4f0dc5b47bd1.js"></script>
+<script src="assets/ScrollTrigger_270ba6162bc6.js"></script>
+
+
+<script data-img-fallback-handler="">!function(){var f=["https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/917d6f93-fb36-439a-8c48-884b67b35381_1600w.jpg","https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/4734259a-bad7-422f-981e-ce01e79184f2_1600w.jpg","https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/c543a9e1-f226-4ced-80b0-feb8445a75b9_1600w.jpg","https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/5bab247f-35d9-400d-a82b-fd87cfe913d2_1600w.webp","https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/30104e3c-5eea-4b93-93e9-5313698a7156_1600w.webp"],h=new Set;function g(s){for(var x=0,i=0;i<s.length;i++)x=(x<<5)-x+s.charCodeAt(i)|0;return f[Math.abs(x)%f.length]}function r(t){var s=t.src;if(s&&!h.has(s)){h.add(s);t.src=g(s)}}window.addEventListener("error",function(e){var t=e.target;if(t&&t.tagName==="IMG")r(t)},!0);function c(){document.querySelectorAll("img").forEach(function(i){if(i.complete&&!i.naturalWidth&&i.src)r(i)})}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",c);else c()}()</script></body></html>

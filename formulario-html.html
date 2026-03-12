@@ -1,0 +1,222 @@
+<!-- ========================================
+     SEÇÃO DO FORMULÁRIO - ATUALIZADO
+     Design System com cor VERMELHA de destaque
+     ======================================== -->
+
+<!-- REGISTRATION FORM SECTION (NATIVE FORM) -->
+<section id="inscricao" class="max-w-7xl mx-auto px-6 pb-32">
+    <div class="border border-white/10 bg-[#0A0C10] rounded-3xl overflow-hidden shadow-2xl relative">
+        <div class="absolute bottom-0 left-1/2 -translate-x-1/2 w-[400px] h-[300px] bg-red-500/10 rounded-full blur-[100px] pointer-events-none"></div>
+        <div class="p-10 md:p-16 text-center relative z-10">
+            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-xs text-red-400 mb-6 font-medium">
+                <div class="w-2 h-2 rounded-full bg-red-500 animate-[spin_2s_linear_infinite]"></div>
+                INSCRIÇÃO GRATUITA
+            </div>
+            <h2 class="text-4xl lg:text-5xl font-medium text-white mb-6 tracking-tight">
+                Preencha seus dados abaixo<br/>para garantir seu acesso gratuito
+            </h2>
+            <p class="text-slate-400 text-lg leading-relaxed max-w-2xl mx-auto mb-10">
+                Basta preencher o formulário abaixo para garantir sua vaga na masterclass exclusiva sobre aprovação de crédito imobiliário.
+            </p>
+
+            <!-- Native Form -->
+            <div class="form-container">
+                <form id="inscricao-form" class="space-y-6">
+                    <!-- Nome -->
+                    <div class="space-y-2">
+                        <label for="nome" class="form-label">Nome</label>
+                        <input
+                            type="text"
+                            id="nome"
+                            name="nome"
+                            placeholder="Seu nome completo"
+                            class="form-input"
+                            required
+                        >
+                    </div>
+
+                    <!-- Telefone -->
+                    <div class="space-y-2">
+                        <label for="telefone" class="form-label">Telefone</label>
+                        <input
+                            type="tel"
+                            id="telefone"
+                            name="telefone"
+                            placeholder="(11) 99999-9999"
+                            class="form-input"
+                            required
+                        >
+                    </div>
+
+                    <!-- Cidade -->
+                    <div class="space-y-2">
+                        <label for="cidade" class="form-label">Em que cidade você reside</label>
+                        <input
+                            type="text"
+                            id="cidade"
+                            name="cidade"
+                            placeholder="Ex: São Paulo"
+                            class="form-input"
+                            required
+                        >
+                    </div>
+
+                    <!-- É Corretor? -->
+                    <div class="space-y-2">
+                        <label for="corretor" class="form-label">Você já é corretor(a) de imóveis?</label>
+                        <select
+                            id="corretor"
+                            name="corretor"
+                            class="form-select"
+                            required
+                        >
+                            <option value="">Selecione uma opção</option>
+                            <option value="sim">Sim</option>
+                            <option value="nao">Não</option>
+                        </select>
+                    </div>
+
+                    <!-- Tempo de Atuação -->
+                    <div class="space-y-2">
+                        <label for="tempo_atuacao" class="form-label">Há quanto tempo atua na profissão?</label>
+                        <input
+                            type="text"
+                            id="tempo_atuacao"
+                            name="tempo_atuacao"
+                            placeholder="Ex: 2 anos"
+                            class="form-input"
+                            required
+                        >
+                    </div>
+
+                    <!-- Submit Button -->
+                    <button
+                        type="submit"
+                        class="group relative inline-flex w-full h-14 overflow-hidden rounded-lg p-[1px] focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2 focus:ring-offset-slate-900 mt-4 rounded-xl"
+                    >
+                        <span class="absolute inset-[-1000%] animate-[spin_2s_linear_infinite] bg-[conic-gradient(from_90deg_at_50%_50%,#ef4444_0%,#050505_50%,#ef4444_100%)]"></span>
+                        <span class="inline-flex cursor-pointer items-center justify-center transition-colors group-hover:bg-[#050505]/80 text-lg font-medium text-white bg-[#050505] w-full h-full rounded-xl backdrop-blur-3xl gap-2">
+                            Garantir minha vaga
+                            <svg class="w-5 h-5 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+                                <path d="M5 12h14"></path>
+                                <path d="m12 5 7 7-7 7"></path>
+                            </svg>
+                        </span>
+                    </button>
+
+                    <!-- Security Badge -->
+                    <div class="flex items-center gap-2 justify-center text-xs text-slate-500 mt-4">
+                        <svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                        </svg>
+                        <span>Seus dados estão 100% seguros conosco.</span>
+                    </div>
+                </form>
+
+                <!-- Success Message (Hidden by default) -->
+                <div id="success-message" class="hidden success-message">
+                    <div class="flex flex-col items-center gap-6 py-8">
+                        <div class="h-20 w-20 rounded-full bg-green-500/20 border-2 border-green-500 flex items-center justify-center">
+                            <svg class="w-10 h-10 text-green-500" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="3" viewBox="0 0 24 24">
+                                <path d="M20 6L9 17l-5-5"></path>
+                            </svg>
+                        </div>
+                        <h3 class="text-3xl font-medium text-white tracking-tight">
+                            Em breve você receberá<br/>o link da aula.
+                        </h3>
+                        <p class="text-xl text-slate-300">
+                            Até breve!
+                        </p>
+                        <div class="flex items-center gap-2 justify-center text-xs text-slate-500 mt-4">
+                            <svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+                                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                            </svg>
+                            <span>Seus dados estão 100% seguros conosco.</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Error Message (Hidden by default) -->
+                <div id="error-message" class="hidden">
+                    <div class="flex items-center gap-3 p-4 rounded-lg bg-red-500/10 border border-red-500/30 mb-4">
+                        <svg class="w-5 h-5 text-red-500 flex-shrink-0" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+                            <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                        </svg>
+                        <p class="text-sm text-red-400">
+                            Ocorreu um erro ao enviar. Por favor, tente novamente.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ========================================
+     CSS ADICIONAL (se necessário)
+     ======================================== -->
+<style>
+.form-input {
+    height: 3.5rem;
+    width: 100%;
+    background: #050505;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 0.5rem;
+    padding: 0.75rem 1rem;
+    color: white;
+    outline: none;
+    transition: all 0.2s;
+}
+
+.form-input:focus {
+    outline: none;
+    ring: 2px;
+    ring-color: #f87171;
+    border-color: transparent;
+}
+
+.form-input::placeholder {
+    color: #475569;
+}
+
+.form-select {
+    height: 3.5rem;
+    width: 100%;
+    background: #050505;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 0.5rem;
+    padding: 0.75rem 1rem;
+    color: white;
+    outline: none;
+    transition: all 0.2s;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 1rem center;
+    background-size: 1.25rem;
+}
+
+.form-select:focus {
+    outline: none;
+    ring: 2px;
+    ring-color: #f87171;
+    border-color: transparent;
+}
+
+.form-label {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #cbd5e1;
+}
+
+.form-container {
+    max-width: 28rem;
+    margin: 0 auto;
+}
+
+@media (max-width: 640px) {
+    .form-container {
+        max-width: 100%;
+    }
+}
+</style>
